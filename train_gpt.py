@@ -181,18 +181,18 @@ class Muon(torch.optim.Optimizer):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
         params: list[Tensor] = [*params]
         param_groups = []
-        for size in {p.numel() for p in params}:
-            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
-            group = dict(params=[p for p in params if p.numel() == size],
-                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)])
+        for size in {p.numel() for p in params}: # iterates over each size present in params
+            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda") # empty bfloat16
+            group = dict(params=[p for p in params if p.numel() == size], # creates a dict, params = params of a certain size. Update buffer is an empty tensor.
+                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)]) # creates an index for each gpu in the update buffer
             param_groups.append(group)
         super().__init__(param_groups, defaults)
 
     @torch.no_grad()
     def step(self):
-        for group in self.param_groups:
-            update_buffer: Tensor = group["update_buffer"]
-            update_buffer_views: list[Tensor] = group["update_buffer_views"]
+        for group in self.param_groups: #for each group of parameters of the same size
+            update_buffer: Tensor = group["update_buffer"] #gets the update buffer
+            update_buffer_views: list[Tensor] = group["update_buffer_views"] #gets the view
             # generate weight updates in distributed fashion
             params: list[Tensor] = group["params"]
             handle = None
@@ -204,17 +204,18 @@ class Muon(torch.optim.Optimizer):
                     p_world.add_(g_world.view_as(p_world),
                                  alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1)) ** 0.5)
 
-            for base_i in range(len(params))[::self.world_size]:
+            for base_i in range(len(params))[::self.world_size]: #could be optimized?
                 if base_i + self.rank < len(params):
-                    p = params[base_i + self.rank]
-                    g = p.grad
+                    p = params[base_i + self.rank] #distributes params to gpu
+                    orig = g = p.grad # GET THE GRADIENT
                     assert g is not None
-                    state = self.state[p]
+                    state = self.state[p] #get the state
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
-                    buf: Tensor = state["momentum_buffer"]
+                    buf: Tensor = state["momentum_buffer"] #gets the momentum buffer
                     buf.lerp_(g, 1 - group["momentum"])
                     g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+                    g = (orig * g > 0).to(g.dtype)
                     g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
