@@ -216,29 +216,6 @@ class Muon(torch.optim.Optimizer):
                     buf: Tensor = state["momentum_buffer"] #gets the momentum buffer
                     buf.lerp_(g, 1 - group["momentum"])
                     g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                    # before_mask_norm = torch.norm(g).item()
-
-                    # mask = (orig * g > 0).to(g.dtype)
-
-                    # g = g*mask
-
-                    # Implement α(x) scaling factor with ξ = 1 by default
-                    # dim_x = g.numel()
-                    # nnz_x = torch.count_nonzero(g).item()
-                    # xi = group.get("xi", 1.0)  # Allow customization of ξ parameter
-                    # if nnz_x > 0:  # Avoid division by zero
-                    # alpha_x = dim_x / (nnz_x + xi)
-                    # g = g * alpha_x  # Apply scaling factor
-
-                    # after_mask_norm = torch.norm(g).item()
-                    # Count elements where signs differ
-                    # diff_sign_count = torch.sum(g == 0).item()
-                    # total_elements = g.numel()
-                    # diff_sign_percentage = (diff_sign_count / total_elements) * 100
-                    # magnitude_reduction = ((before_mask_norm - after_mask_norm) / before_mask_norm) * 100 if before_mask_norm > 0 else 0.0
-
-                    # print(f"Parameter {base_i + self.rank}: {diff_sign_count}/{total_elements} elements have different signs ({diff_sign_percentage:.2f}%)")
-                    # print(f"Parameter {base_i + self.rank}: Magnitude before mask: {before_mask_norm:.6f}, after mask: {after_mask_norm:.6f}, reduction: {magnitude_reduction:.2f}%")
                     g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
