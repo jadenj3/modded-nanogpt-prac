@@ -181,18 +181,18 @@ class Muon(torch.optim.Optimizer):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
         params: list[Tensor] = [*params]
         param_groups = []
-        for size in {p.numel() for p in params}: # iterates over each size present in params
-            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda") # empty bfloat16
-            group = dict(params=[p for p in params if p.numel() == size], # creates a dict, params = params of a certain size. Update buffer is an empty tensor.
-                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)]) # creates an index for each gpu in the update buffer
+        for size in {p.numel() for p in params}:
+            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
+            group = dict(params=[p for p in params if p.numel() == size],
+                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)])
             param_groups.append(group)
         super().__init__(param_groups, defaults)
 
     @torch.no_grad()
     def step(self):
-        for group in self.param_groups: #for each group of parameters of the same size
-            update_buffer: Tensor = group["update_buffer"] #gets the update buffer
-            update_buffer_views: list[Tensor] = group["update_buffer_views"] #gets the view
+        for group in self.param_groups:
+            update_buffer: Tensor = group["update_buffer"]
+            update_buffer_views: list[Tensor] = group["update_buffer_views"]
             # generate weight updates in distributed fashion
             params: list[Tensor] = group["params"]
             handle = None
@@ -204,18 +204,44 @@ class Muon(torch.optim.Optimizer):
                     p_world.add_(g_world.view_as(p_world),
                                  alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1)) ** 0.5)
 
-            for base_i in range(len(params))[::self.world_size]: #could be optimized?
+            for base_i in range(len(params))[::self.world_size]:
                 if base_i + self.rank < len(params):
-                    p = params[base_i + self.rank] #distributes params to gpu
-                    g = p.grad # GET THE GRADIENT
+                    p = params[base_i + self.rank]
+                    g = p.grad
                     orig = g.clone().detach()
                     assert g is not None
-                    state = self.state[p] #get the state
+                    state = self.state[p]
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
-                    buf: Tensor = state["momentum_buffer"] #gets the momentum buffer
+                    buf: Tensor = state["momentum_buffer"]
                     buf.lerp_(g, 1 - group["momentum"])
                     g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+                    #before_mask_norm = torch.norm(g).item()
+
+                    mask = (orig * g > 0).to(g.dtype)
+
+                    g = g*mask
+
+                    # Implement α(x) scaling factor with ξ = 1 by default
+                    dim_x = g.numel()
+                    nnz_x = torch.count_nonzero(g).item()
+                    #xi = group.get("xi", 1.0)  # Allow customization of ξ parameter
+                    if nnz_x > 0:  # Avoid division by zero
+                        alpha_x = dim_x / (nnz_x + 1)
+                        g = g * alpha_x  # Apply scaling factor
+
+
+
+
+                    #after_mask_norm = torch.norm(g).item()
+                    # Count elements where signs differ
+                    #diff_sign_count = torch.sum(g == 0).item()
+                    #total_elements = g.numel()
+                    #diff_sign_percentage = (diff_sign_count / total_elements) * 100
+                    #magnitude_reduction = ((before_mask_norm - after_mask_norm) / before_mask_norm) * 100 if before_mask_norm > 0 else 0.0
+
+                    #print(f"Parameter {base_i + self.rank}: {diff_sign_count}/{total_elements} elements have different signs ({diff_sign_percentage:.2f}%)")
+                    #print(f"Parameter {base_i + self.rank}: Magnitude before mask: {before_mask_norm:.6f}, after mask: {after_mask_norm:.6f}, reduction: {magnitude_reduction:.2f}%")
                     g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
