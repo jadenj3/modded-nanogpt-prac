@@ -403,6 +403,19 @@ class CausalSelfAttention(nn.Module):
         y = self.c_proj(y)
         return y
 
+class MLP(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.c_fc = CastedLinear(dim, 4 * dim)
+        self.c_proj = CastedLinear(4 * dim, dim)
+        self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+        x = self.c_proj(x)
+        return x
+
 
 class ColaMLP(nn.Module):
     def __init__(self, dim):
@@ -437,15 +450,12 @@ class ColaMLP(nn.Module):
             self.act_fn = ACT2FN["silu"]
 
     def forward(self, x):
-        if self.config.pretraining_tp > 1:
-            raise NotImplementedError
+        if not self.only_lr_act:
+            down_proj = self.down_proj(
+                self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+            )
         else:
-            if not self.only_lr_act:
-                down_proj = self.down_proj(
-                    self.act_fn(self.gate_proj(x)) * self.up_proj(x)
-                )
-            else:
-                down_proj = self.down_proj(self.gate_proj(x) * self.up_proj(x))
+            down_proj = self.down_proj(self.gate_proj(x) * self.up_proj(x))
 
         return down_proj
 
@@ -455,7 +465,7 @@ class Block(nn.Module):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
-        self.mlp = ColaMLP(dim)
+        self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
@@ -485,8 +495,8 @@ class GPT(nn.Module):
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         out_dim = next_multiple_of_n(vocab_size, n=128)
         rank_size = min(model_dim, out_dim) // 4  # Common rank reduction
-        self.lm_head = ColaLayer(model_dim, out_dim, rank=rank_size, bias=False, lr_act=False)
-        self.lm_head.cola_a.detach().zero_()  # Zero init one of the matrices
+        self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128))
+        self.lm_head.weight.detach().zero_()  # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
@@ -684,7 +694,7 @@ for param in model.parameters():
 hidden_matrix_params = [p for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
 embed_params = [p for n, p in model.named_parameters() if "embed" in n]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
-head_params = [model.lm_head.weight]
+head_params = [model.lm_head.cola_a, model.lm_head.cola_b]
 
 # init the optimizer(s)
 adam_params = [dict(params=head_params, lr=0.22), dict(params=embed_params, lr=0.6),
