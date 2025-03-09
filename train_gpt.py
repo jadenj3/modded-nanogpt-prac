@@ -367,7 +367,7 @@ class CausalSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         hdim = num_heads * head_dim
-        rank_size = dim//4
+        rank_size = dim//8
         std = 0.5 * (dim ** -0.5)
         bound = (3 ** 0.5) * std  # improved init scale by @YouJiacheng
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
@@ -423,7 +423,7 @@ class ColaMLP(nn.Module):
         self.hidden_size = dim
         self.intermediate_size = int(dim * 2.7)  # 11059.2
         self.intermediate_size = (self.intermediate_size // 64) * 64  # Round to nearest multiple of 64 = 11008
-        self.rank = dim//4
+        self.rank = dim//8
         self.gate_proj = ColaLayer(
             self.hidden_size,
             self.intermediate_size,
