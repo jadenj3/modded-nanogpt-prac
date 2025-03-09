@@ -20,6 +20,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
+from transformers.activations import ACT2FN
 
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
@@ -259,6 +260,60 @@ def norm(x: Tensor):
     return F.rms_norm(x, (x.size(-1),))
 
 
+class ColaLayer(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        rank,
+        bias=True,
+        lr_act=True,
+        lr_act_type="silu",
+    ):
+        super(ColaLayer, self).__init__()
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.rank = rank
+
+        if lr_act:
+            self.lr_act = ACT2FN[lr_act_type]
+
+        target_sdv = (in_features + out_features) ** (-1 / 2)
+        self.cola_a = nn.Parameter(
+            torch.randn(in_features, rank) / rank ** (1 / 4) * target_sdv ** (1 / 2)
+        )
+        self.cola_b = nn.Parameter(
+            torch.randn(rank, out_features) / rank ** (1 / 4) * target_sdv ** (1 / 2)
+        )
+
+        if bias == False:
+            self.register_parameter("bias", None)
+        else:
+            stdv = 1.0 / out_features ** (1 / 2)
+            self.bias = torch.nn.Parameter(torch.randn(out_features))
+            self.bias.data.uniform_(-stdv, stdv)
+
+    def extra_repr(self):
+        return (
+            f"cola_a: {self.cola_a.shape}, cola_b: {self.cola_b.shape}, "
+            f"bias: {self.bias.shape if self.bias is not None else False}"
+        )
+
+    def forward(self, x):
+        out = torch.matmul(x, self.cola_a)
+
+        if hasattr(self, "lr_act"):
+            out = self.lr_act(out)
+
+        out = torch.matmul(out, self.cola_b)
+
+        if self.bias is not None:
+            out += self.bias
+
+        return out
+
+
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int, use_fp8=False, x_s=1.0, w_s=1.0, grad_s=1.0):
         super().__init__(in_features, out_features, bias=False)
@@ -308,11 +363,15 @@ class CausalSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         hdim = num_heads * head_dim
+        rank_size = dim//4
         std = 0.5 * (dim ** -0.5)
         bound = (3 ** 0.5) * std  # improved init scale by @YouJiacheng
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
-        self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
+        #self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
+        self.q_proj = ColaLayer(dim, hdim, rank=rank_size, bias=False)
+        self.k_proj = ColaLayer(dim, hdim, rank=rank_size, bias=False)
+        self.v_proj = ColaLayer(dim, hdim, rank=rank_size, bias=False)
         self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
         self.rotary = Rotary(head_dim, max_seq_len)
         self.c_proj = CastedLinear(hdim, dim)
@@ -321,8 +380,11 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1)  # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
-        q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads,
-                                                                             self.head_dim).chunk(3, dim=-2)
+        #q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads,
+        #                                                                     self.head_dim).chunk(3, dim=-2)
+        q = self.q_proj(x).view(B, T, self.num_heads, self.head_dim)
+        k = self.k_proj(x).view(B, T, self.num_heads, self.head_dim)
+        v = self.v_proj(x).view(B, T, self.num_heads, self.head_dim)
         q, k = norm(q), norm(k)  # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
