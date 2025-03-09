@@ -694,7 +694,7 @@ for param in model.parameters():
 hidden_matrix_params = [p for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
 embed_params = [p for n, p in model.named_parameters() if "embed" in n]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
-head_params = [model.lm_head.cola_a, model.lm_head.cola_b]
+head_params = [model.lm_head.weight]
 
 # init the optimizer(s)
 adam_params = [dict(params=head_params, lr=0.22), dict(params=embed_params, lr=0.6),
