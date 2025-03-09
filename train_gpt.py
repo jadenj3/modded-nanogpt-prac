@@ -20,7 +20,6 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-from transformers.activations import ACT2FN
 
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
@@ -182,18 +181,18 @@ class Muon(torch.optim.Optimizer):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
         params: list[Tensor] = [*params]
         param_groups = []
-        for size in {p.numel() for p in params}:
-            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
-            group = dict(params=[p for p in params if p.numel() == size],
-                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)])
+        for size in {p.numel() for p in params}: # iterates over each size present in params
+            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda") # empty bfloat16
+            group = dict(params=[p for p in params if p.numel() == size], # creates a dict, params = params of a certain size. Update buffer is an empty tensor.
+                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)]) # creates an index for each gpu in the update buffer
             param_groups.append(group)
         super().__init__(param_groups, defaults)
 
     @torch.no_grad()
     def step(self):
-        for group in self.param_groups:
-            update_buffer: Tensor = group["update_buffer"]
-            update_buffer_views: list[Tensor] = group["update_buffer_views"]
+        for group in self.param_groups: #for each group of parameters of the same size
+            update_buffer: Tensor = group["update_buffer"] #gets the update buffer
+            update_buffer_views: list[Tensor] = group["update_buffer_views"] #gets the view
             # generate weight updates in distributed fashion
             params: list[Tensor] = group["params"]
             handle = None
@@ -205,44 +204,18 @@ class Muon(torch.optim.Optimizer):
                     p_world.add_(g_world.view_as(p_world),
                                  alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1)) ** 0.5)
 
-            for base_i in range(len(params))[::self.world_size]:
+            for base_i in range(len(params))[::self.world_size]: #could be optimized?
                 if base_i + self.rank < len(params):
-                    p = params[base_i + self.rank]
-                    g = p.grad
+                    p = params[base_i + self.rank] #distributes params to gpu
+                    g = p.grad # GET THE GRADIENT
                     orig = g.clone().detach()
                     assert g is not None
-                    state = self.state[p]
+                    state = self.state[p] #get the state
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
-                    buf: Tensor = state["momentum_buffer"]
+                    buf: Tensor = state["momentum_buffer"] #gets the momentum buffer
                     buf.lerp_(g, 1 - group["momentum"])
                     g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                    #before_mask_norm = torch.norm(g).item()
-
-                    mask = (orig * g > 0).to(g.dtype)
-
-                    g = g*mask
-
-                    # Implement α(x) scaling factor with ξ = 1 by default
-                    dim_x = g.numel()
-                    nnz_x = torch.count_nonzero(g).item()
-                    #xi = group.get("xi", 1.0)  # Allow customization of ξ parameter
-                    if nnz_x > 0:  # Avoid division by zero
-                        alpha_x = dim_x / (nnz_x + 1)
-                        g = g * alpha_x  # Apply scaling factor
-
-
-
-
-                    #after_mask_norm = torch.norm(g).item()
-                    # Count elements where signs differ
-                    #diff_sign_count = torch.sum(g == 0).item()
-                    #total_elements = g.numel()
-                    #diff_sign_percentage = (diff_sign_count / total_elements) * 100
-                    #magnitude_reduction = ((before_mask_norm - after_mask_norm) / before_mask_norm) * 100 if before_mask_norm > 0 else 0.0
-
-                    #print(f"Parameter {base_i + self.rank}: {diff_sign_count}/{total_elements} elements have different signs ({diff_sign_percentage:.2f}%)")
-                    #print(f"Parameter {base_i + self.rank}: Magnitude before mask: {before_mask_norm:.6f}, after mask: {after_mask_norm:.6f}, reduction: {magnitude_reduction:.2f}%")
                     g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
@@ -258,64 +231,6 @@ class Muon(torch.optim.Optimizer):
 
 def norm(x: Tensor):
     return F.rms_norm(x, (x.size(-1),))
-
-
-class ColaLayer(nn.Module):
-    def __init__(
-        self,
-        in_features,
-        out_features,
-        rank,
-        bias=True,
-        lr_act=True,
-        lr_act_type="silu",
-    ):
-        super(ColaLayer, self).__init__()
-
-        self.in_features = in_features
-        self.out_features = out_features
-        self.rank = rank
-
-        if lr_act:
-            self.lr_act = ACT2FN[lr_act_type]
-
-        target_sdv = (in_features + out_features) ** (-1 / 2)
-        self.cola_a = nn.Parameter(
-            torch.randn(in_features, rank) / rank ** (1 / 4) * target_sdv ** (1 / 2)
-        )
-        self.cola_b = nn.Parameter(
-            torch.randn(rank, out_features) / rank ** (1 / 4) * target_sdv ** (1 / 2)
-        )
-
-        if bias == False:
-            self.register_parameter("bias", None)
-        else:
-            stdv = 1.0 / out_features ** (1 / 2)
-            self.bias = torch.nn.Parameter(torch.randn(out_features))
-            self.bias.data.uniform_(-stdv, stdv)
-
-    def extra_repr(self):
-        return (
-            f"cola_a: {self.cola_a.shape}, cola_b: {self.cola_b.shape}, "
-            f"bias: {self.bias.shape if self.bias is not None else False}"
-        )
-
-    def forward(self, x):
-        # Ensure parameters match input type
-        cola_a = self.cola_a.type_as(x)
-        cola_b = self.cola_b.type_as(x)
-
-        out = torch.matmul(x, cola_a)
-
-        if hasattr(self, "lr_act"):
-            out = self.lr_act(out)
-
-        out = torch.matmul(out, cola_b)
-
-        if self.bias is not None:
-            out += self.bias.type_as(x)
-
-        return out
 
 
 class CastedLinear(nn.Linear):
@@ -367,28 +282,21 @@ class CausalSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         hdim = num_heads * head_dim
-        rank_size = dim//8
         std = 0.5 * (dim ** -0.5)
         bound = (3 ** 0.5) * std  # improved init scale by @YouJiacheng
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
-        #self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
-        self.q_proj = ColaLayer(dim, hdim, rank=rank_size, bias=False)
-        self.k_proj = ColaLayer(dim, hdim, rank=rank_size, bias=False)
-        self.v_proj = ColaLayer(dim, hdim, rank=rank_size, bias=False)
+        self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
         self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
         self.rotary = Rotary(head_dim, max_seq_len)
-        self.c_proj = ColaLayer(hdim, dim, rank=rank_size, bias=False)
-        self.c_proj.cola_a.detach().zero_()  # Zero init one of the matrices
+        self.c_proj = CastedLinear(hdim, dim)
+        self.c_proj.weight.detach().zero_()  # zero init suggested by @Grad62304977
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1)  # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
-        #q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads,
-        #                                                                     self.head_dim).chunk(3, dim=-2)
-        q = self.q_proj(x).view(B, T, self.num_heads, self.head_dim)
-        k = self.k_proj(x).view(B, T, self.num_heads, self.head_dim)
-        v = self.v_proj(x).view(B, T, self.num_heads, self.head_dim)
+        q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads,
+                                                                             self.head_dim).chunk(3, dim=-2)
         q, k = norm(q), norm(k)  # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
@@ -403,61 +311,21 @@ class CausalSelfAttention(nn.Module):
         y = self.c_proj(y)
         return y
 
-class MLP(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.c_fc = CastedLinear(dim, 4 * dim)
-        self.c_proj = CastedLinear(4 * dim, dim)
-        self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
 
-    def forward(self, x):
+class MLP(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        hdim = 4 * dim
+        self.c_fc = CastedLinear(dim, hdim)
+        self.c_proj = CastedLinear(hdim, dim)
+        self.c_proj.weight.detach().zero_()  # zero init suggested by @Grad62304977
+
+    def forward(self, x: Tensor):
         x = self.c_fc(x)
-        x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+        x = F.relu(
+            x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
         x = self.c_proj(x)
         return x
-
-
-class ColaMLP(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.hidden_size = dim
-        self.intermediate_size = int(dim * 2.7)  # 11059.2
-        self.intermediate_size = (self.intermediate_size // 64) * 64  # Round to nearest multiple of 64 = 11008
-        self.rank = dim//8
-        self.gate_proj = ColaLayer(
-            self.hidden_size,
-            self.intermediate_size,
-            self.rank,
-            bias=False,
-            lr_act_type="silu",
-        )
-        self.up_proj = ColaLayer(
-            self.hidden_size,
-            self.intermediate_size,
-            self.rank,
-            bias=False,
-            lr_act_type="silu",
-        )
-        self.down_proj = ColaLayer(
-            self.intermediate_size,
-            self.hidden_size,
-            self.rank,
-            bias=False,
-            lr_act_type="silu",
-        )
-        self.only_lr_act = True
-        if not self.only_lr_act:
-            self.act_fn = ACT2FN["silu"]
-
-    def forward(self, x):
-        if not self.only_lr_act:
-            down_proj = self.down_proj(
-                self.act_fn(self.gate_proj(x)) * self.up_proj(x)
-            )
-        else:
-            down_proj = self.down_proj(self.gate_proj(x) * self.up_proj(x))
-
-        return down_proj
 
 
 class Block(nn.Module):
@@ -465,7 +333,7 @@ class Block(nn.Module):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
-        self.mlp = ColaMLP(dim)
+        self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
@@ -493,9 +361,8 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
-        out_dim = next_multiple_of_n(vocab_size, n=128)
-        rank_size = min(model_dim, out_dim) // 4  # Common rank reduction
-        self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128))
+        self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128),
+                                    use_fp8=False, x_s=(model_dim ** 0.5) / 448, w_s=24 / 448, grad_s=1 / 448)
         self.lm_head.weight.detach().zero_()  # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
