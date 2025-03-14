@@ -256,6 +256,18 @@ class CastedLinear(nn.Linear):
             return F.linear(x, self.weight.type_as(x))
 
 
+class DyT(nn.Module):
+    def __init__(self, num_features, alpha_init_value=0.5):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(1) * alpha_init_value)
+        self.weight = nn.Parameter(torch.ones(num_features))
+        self.bias = nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x):
+        x = torch.tanh(self.alpha * x)
+        return x * self.weight + self.bias
+
+
 class Rotary(nn.Module):
     def __init__(self, dim: int, max_seq_len: int):
         super().__init__()
@@ -291,13 +303,14 @@ class CausalSelfAttention(nn.Module):
         self.rotary = Rotary(head_dim, max_seq_len)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_()  # zero init suggested by @Grad62304977
+        self.dyt = DyT(dim)
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1)  # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads,
                                                                              self.head_dim).chunk(3, dim=-2)
-        q, k = norm(q), norm(k)  # QK norm @Grad62304977
+        q, k = self.dyt.forward(q), self.dyt.forward(k)  # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v)  # @KoszarskyB & @Grad62304977
@@ -335,12 +348,13 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
+        self.dyt = DyT(dim)
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if self.attn is not None:
-            x = x + self.attn(norm(x), ve, block_mask)
-        x = x + self.mlp(norm(x))
+            x = x + self.attn(self.dyt.forward(x), ve, block_mask)
+        x = x + self.mlp(self.dyt.forward(x))
         return x
 
 
