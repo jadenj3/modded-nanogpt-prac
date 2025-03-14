@@ -19,6 +19,12 @@ import torch.distributed as dist
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
 #torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
+os.environ["LOCAL_RANK"] = "0"  # Use the single GPU
+os.environ["WORLD_SIZE"] = "1"  # Total number of processes
+os.environ["RANK"] = "0"  # Global rank (only one process)
+os.environ["MASTER_ADDR"] = "localhost"  # Add this
+os.environ["MASTER_PORT"] = "12355"  # Add this - can be any free port
+
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
 
