@@ -373,9 +373,9 @@ class GPT(nn.Module):
         self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128),
                                     use_fp8=False, x_s=(model_dim ** 0.5) / 448, w_s=24 / 448, grad_s=1 / 448)
         self.lm_head.weight.detach().zero_()  # @Grad62304977
+        self.num_layers = num_layers
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -437,10 +437,10 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         skip_connections = []
-        n = len(self.skip_weights)
+        n = self.num_layers // 2
         for i in range(len(self.blocks)):
             if i >= n == 0:
-                x = x + self.skip_weights[i - n] * skip_connections.pop()
+                x = x + skip_connections.pop()
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n == 0:
                 skip_connections.append(x)
