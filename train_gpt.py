@@ -375,7 +375,9 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_()  # @Grad62304977
         self.num_layers = num_layers
         # Add learnable skip connection weights for decoder layers
+        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         assert num_layers % 2 == 0
+        self.average = None
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -437,13 +439,22 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         skip_connections = []
-        n = self.num_layers // 2
+        n = len(self.skip_weights)
         for i in range(len(self.blocks)):
-            if i >= n == 0:
-                x = x + skip_connections.pop()
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            if i < n == 0:
-                skip_connections.append(x)
+            #if i >= n:
+                #x = x + self.skip_weights[i - n] * skip_connections.pop()
+           # x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            #if i < n:
+                #skip_connections.append(x)
+            # avg_n = avg_{n-1} * (1 - 1/n) + x_n/n
+            if self.average is None:
+                # First tensor special case
+                self.average = x.clone()
+                if self.dtype is not None or self.device is not None:
+                    self.average = self.average.to(dtype=self.dtype, device=self.device)
+                return self.average
+            alpha = 1.0 / i
+            self.average = torch.lerp(self.average, x, alpha)
 
         x = norm(x)
         logits = self.lm_head(x).float()
@@ -499,7 +510,7 @@ class Hyperparameters:
     train_seq_len = 48 * 1024  # FlexAttention sequence length
     val_seq_len = 4 * 64 * 1024  # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 1770  # number of iterations to run
+    num_iterations = 1790  # number of iterations to run
     cooldown_frac = 0.4  # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
