@@ -20,6 +20,7 @@ from pathlib import Path
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
+import random
 
 torch.empty(1, device="cuda", requires_grad=True).backward()  # prevents a bug on some systems
 from torch import Tensor, nn
@@ -35,6 +36,17 @@ os.environ["WORLD_SIZE"] = "1"  # Total number of processes
 os.environ["RANK"] = "0"  # Global rank (only one process)
 os.environ["MASTER_ADDR"] = "localhost"  # Add this
 os.environ["MASTER_PORT"] = "12355"  # Add this - can be any free port
+
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
+seed_everything(42)
+
 
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
@@ -375,9 +387,8 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_()  # @Grad62304977
         self.num_layers = num_layers
         # Add learnable skip connection weights for decoder layers
-        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         assert num_layers % 2 == 0
-        self.average = None
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -438,23 +449,29 @@ class GPT(nn.Module):
         x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
-        skip_connections = []
-        n = len(self.skip_weights)
+        #skip_connections = []
+        #n = len(self.skip_weights)
+        average = None
+        average_count = 0
         for i in range(len(self.blocks)):
             #if i >= n:
                 #x = x + self.skip_weights[i - n] * skip_connections.pop()
-           # x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
             #if i < n:
                 #skip_connections.append(x)
             # avg_n = avg_{n-1} * (1 - 1/n) + x_n/n
-            if self.average is None:
-                # First tensor special case
-                self.average = x.clone()
-                if self.dtype is not None or self.device is not None:
-                    self.average = self.average.to(dtype=self.dtype, device=self.device)
-                return self.average
-            alpha = 1.0 / i
-            self.average = torch.lerp(self.average, x, alpha)
+            # Local moving average logic
+            with torch.no_grad():
+              if average is None:
+                  # First block special case
+                  average = x.detach().clone()
+                  average_count = 1
+              else:
+                  average_count += 1
+                  alpha = 1.0 / average_count
+                  # Mix without creating persistent graph references
+                  average = torch.lerp(average, x.detach(), alpha)
+        x = x + average
 
         x = norm(x)
         logits = self.lm_head(x).float()
