@@ -48,6 +48,23 @@ def seed_everything(seed):
 seed_everything(42)
 
 
+import torch
+
+
+class DWA(torch.nn.Module):
+    def __init__(self, n_alphas):
+        super().__init__()
+        self.n_alphas = n_alphas
+        alphas = torch.zeros((n_alphas,))
+        alphas[-1] = 1.0
+        self.alphas = torch.nn.Parameter(alphas)
+    def forward(self, all_previous_x):
+        weighted_avg = all_previous_x[0] * self.alphas[0]
+        for i in range(1, self.n_alphas):
+            weighted_avg += self.alphas[i] * all_previous_x[i]
+        return weighted_avg
+
+
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
@@ -313,6 +330,7 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_()  # zero init suggested by @Grad62304977
 
+
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1)  # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
@@ -389,6 +407,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         assert num_layers % 2 == 0
+        self.dwa_modules = torch.nn.ModuleList([DWA(n_alphas=i+2) for i in range(num_layers)])
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -446,6 +465,7 @@ class GPT(nn.Module):
                        short_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
 
+
         x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
@@ -453,13 +473,12 @@ class GPT(nn.Module):
         average_count = 0
         # U-net design by @brendanh0gan
         skip_connections = []
-        n = self.num_layers//2
+        #n = self.num_layers//2
+        all_previous_x = [x]  # This stores all the intermediary representations
         for i in range(len(self.blocks)):
-            if i >= n:
-                x = x + skip_connections.pop()
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            if i < n:
-                skip_connections.append(x)
+            all_previous_x.append(x)
+            x = self.dwa_modules[i](all_previous_x)  # Computing the weighted average
         '''
         for i in range(len(self.blocks)):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
