@@ -449,16 +449,20 @@ class GPT(nn.Module):
         x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
-        #skip_connections = []
-        #n = len(self.skip_weights)
         average = None
         average_count = 0
+        # U-net design by @brendanh0gan
+        skip_connections = []
+        n = self.num_layers//2
         for i in range(len(self.blocks)):
-            #if i >= n:
-                #x = x + self.skip_weights[i - n] * skip_connections.pop()
+            if i >= n:
+                x = x + skip_connections.pop()
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            #if i < n:
-                #skip_connections.append(x)
+            if i < n:
+                skip_connections.append(x)
+        '''
+        for i in range(len(self.blocks)):
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
             # avg_n = avg_{n-1} * (1 - 1/n) + x_n/n
             # Local moving average logic
             with torch.no_grad():
@@ -471,7 +475,7 @@ class GPT(nn.Module):
                   alpha = 1.0 / average_count
                   # Mix without creating persistent graph references
                   average = torch.lerp(average, x.detach(), alpha)
-        x = x + average
+        x = x + average'''
 
         x = norm(x)
         logits = self.lm_head(x).float()
