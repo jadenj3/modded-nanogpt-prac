@@ -12,11 +12,19 @@ from functools import lru_cache
 from pathlib import Path
 
 # Uninstall all PyTorch components
-!pip uninstall -y torch torchvision torchaudio
+!pip
+uninstall - y
+torch
+torchvision
+torchaudio
 
 # Install them all together from the nightly build
-!pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu121
-
+!pip
+install - -pre
+torch
+torchvision
+torchaudio - -index - url
+https: // download.pytorch.org / whl / nightly / cu121
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
@@ -28,6 +36,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
+
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
 
@@ -37,6 +46,7 @@ os.environ["RANK"] = "0"  # Global rank (only one process)
 os.environ["MASTER_ADDR"] = "localhost"  # Add this
 os.environ["MASTER_PORT"] = "12355"  # Add this - can be any free port
 
+
 def seed_everything(seed):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -45,25 +55,11 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
+
+
 seed_everything(42)
 
-
 import torch
-
-
-class DWA(torch.nn.Module):
-    def __init__(self, n_alphas):
-        super().__init__()
-        self.n_alphas = n_alphas
-        alphas = torch.zeros((n_alphas,))
-        alphas[-1] = 1.0
-        self.alphas = torch.nn.Parameter(alphas)
-    def forward(self, all_previous_x):
-        weighted_avg = all_previous_x[0] * self.alphas[0]
-        for i in range(1, self.n_alphas):
-            weighted_avg += self.alphas[i] * all_previous_x[i]
-        return weighted_avg
-
 
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
@@ -214,18 +210,20 @@ class Muon(torch.optim.Optimizer):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
         params: list[Tensor] = [*params]
         param_groups = []
-        for size in {p.numel() for p in params}: # iterates over each size present in params
-            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda") # empty bfloat16
-            group = dict(params=[p for p in params if p.numel() == size], # creates a dict, params = params of a certain size. Update buffer is an empty tensor.
-                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)]) # creates an index for each gpu in the update buffer
+        for size in {p.numel() for p in params}:  # iterates over each size present in params
+            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")  # empty bfloat16
+            group = dict(params=[p for p in params if p.numel() == size],
+                         # creates a dict, params = params of a certain size. Update buffer is an empty tensor.
+                         update_buffer=b, update_buffer_views=[b[i] for i in range(
+                    world_size)])  # creates an index for each gpu in the update buffer
             param_groups.append(group)
         super().__init__(param_groups, defaults)
 
     @torch.no_grad()
     def step(self):
-        for group in self.param_groups: #for each group of parameters of the same size
-            update_buffer: Tensor = group["update_buffer"] #gets the update buffer
-            update_buffer_views: list[Tensor] = group["update_buffer_views"] #gets the view
+        for group in self.param_groups:  # for each group of parameters of the same size
+            update_buffer: Tensor = group["update_buffer"]  # gets the update buffer
+            update_buffer_views: list[Tensor] = group["update_buffer_views"]  # gets the view
             # generate weight updates in distributed fashion
             params: list[Tensor] = group["params"]
             handle = None
@@ -237,18 +235,23 @@ class Muon(torch.optim.Optimizer):
                     p_world.add_(g_world.view_as(p_world),
                                  alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1)) ** 0.5)
 
-            for base_i in range(len(params))[::self.world_size]: #could be optimized?
+            for base_i in range(len(params))[::self.world_size]:  # could be optimized?
                 if base_i + self.rank < len(params):
-                    p = params[base_i + self.rank] #distributes params to gpu
-                    g = p.grad # GET THE GRADIENT
+                    p = params[base_i + self.rank]  # distributes params to gpu
+                    g = p.grad  # GET THE GRADIENT
                     orig = g.clone().detach()
                     assert g is not None
-                    state = self.state[p] #get the state
+                    state = self.state[p]  # get the state
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
-                    buf: Tensor = state["momentum_buffer"] #gets the momentum buffer
+                    buf: Tensor = state["momentum_buffer"]  # gets the momentum buffer
                     buf.lerp_(g, 1 - group["momentum"])
                     g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+
+                    mask = (orig * g > 0).to(g.dtype)
+
+                    g = g * mask
+
                     g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
@@ -287,6 +290,7 @@ class CastedLinear(nn.Linear):
             return out.reshape(*x.shape[:-1], -1)
         else:
             return F.linear(x, self.weight.type_as(x))
+
 
 def tanh(x: Tensor):
     rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + 1e-8)
@@ -329,7 +333,6 @@ class CausalSelfAttention(nn.Module):
         self.rotary = Rotary(head_dim, max_seq_len)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_()  # zero init suggested by @Grad62304977
-
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1)  # batch size, sequence length
@@ -405,9 +408,8 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_()  # @Grad62304977
         self.num_layers = num_layers
         # Add learnable skip connection weights for decoder layers
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        # self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         assert num_layers % 2 == 0
-        self.dwa_modules = torch.nn.ModuleList([DWA(n_alphas=i+2) for i in range(num_layers)])
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -465,36 +467,19 @@ class GPT(nn.Module):
                        short_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
 
-
         x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
-        average = None
-        average_count = 0
         # U-net design by @brendanh0gan
         skip_connections = []
-        #n = self.num_layers//2
-        all_previous_x = [x]  # This stores all the intermediary representations
+        n = self.num_layers // 2
+
         for i in range(len(self.blocks)):
+            if i >= n:
+                x = x + skip_connections.pop()
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            all_previous_x.append(x)
-            x = self.dwa_modules[i](all_previous_x)  # Computing the weighted average
-        '''
-        for i in range(len(self.blocks)):
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            # avg_n = avg_{n-1} * (1 - 1/n) + x_n/n
-            # Local moving average logic
-            with torch.no_grad():
-              if average is None:
-                  # First block special case
-                  average = x.detach().clone()
-                  average_count = 1
-              else:
-                  average_count += 1
-                  alpha = 1.0 / average_count
-                  # Mix without creating persistent graph references
-                  average = torch.lerp(average, x.detach(), alpha)
-        x = x + average'''
+            if i < n:
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x).float()
