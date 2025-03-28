@@ -348,7 +348,7 @@ class GPT(nn.Module):
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
         #self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
-        self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
+        self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i, num_layers) for i in range(num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128),
@@ -416,7 +416,7 @@ class GPT(nn.Module):
         n = self.num_layers // 2
         prev_outputs = torch.zeros(len(self.blocks)+1, *x.shape, device=x.device)
         for i in range(len(self.blocks)):
-            x = self.blocks[i](x, None, x0, block_masks[i], prev_outputs, self.num_layers)
+            x = self.blocks[i](x, None, x0, block_masks[i], prev_outputs)
 
         x = norm(x)
         logits = self.lm_head(x).float()
