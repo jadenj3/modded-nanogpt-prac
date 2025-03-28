@@ -318,7 +318,7 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, max_layers=8):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, max_layers=12):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
@@ -416,7 +416,7 @@ class GPT(nn.Module):
         n = self.num_layers // 2
         prev_outputs = torch.zeros(len(self.blocks)+1, *x.shape, device=x.device)
         for i in range(len(self.blocks)):
-            x = self.blocks[i](x, None, x0, block_masks[i], prev_outputs)
+            x = self.blocks[i](x, None, x0, block_masks[i], prev_outputs, self.num_layers)
 
         x = norm(x)
         logits = self.lm_head(x).float()
