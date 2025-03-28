@@ -324,14 +324,12 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         #self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
-        self.residual_weights = nn.Parameter(torch.zeros(max_layers + 1))  # +1 for input
-        self.residual_weights.data[:layer_idx + 1] = 1.0  # Initialize active weights to 1
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs: Tensor):
         #x = self.lambdas[0] * x + self.lambdas[1] * x0
-        weighted_x = torch.einsum('l,lbsd->bsd', self.residual_weights, prev_outputs)
+        #weighted_x = torch.einsum('l,lbsd->bsd', self.residual_weights, prev_outputs)
         if self.attn is not None:
-            x = x + self.attn(norm(x), None, block_mask) + weighted_x
+            x = x + self.attn(norm(x), None, block_mask)
         x = x + self.mlp(norm(x))
         return x
 
@@ -413,10 +411,12 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
-        n = self.num_layers // 2
-        prev_outputs = torch.zeros(len(self.blocks)+1, *x.shape, device=x.device)
+        prev_outputs = []
         for i in range(len(self.blocks)):
             x = self.blocks[i](x, None, x0, block_masks[i], prev_outputs)
+            for j in range(len(prev_outputs)):
+              x = x + self.residual_weights[i]*prev_outputs[j]
+            prev_outputs.append(x)
 
         x = norm(x)
         logits = self.lm_head(x).float()
