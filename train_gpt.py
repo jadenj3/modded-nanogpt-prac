@@ -318,17 +318,20 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, max_layers=8):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         #self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
+        self.residual_weights = nn.Parameter(torch.zeros(max_layers + 1))  # +1 for input
+        self.residual_weights.data[:layer_idx + 1] = 1.0  # Initialize active weights to 1
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs: Tensor):
         #x = self.lambdas[0] * x + self.lambdas[1] * x0
+        weighted_x = torch.einsum('l,lbsd->bsd', self.residual_weights, prev_outputs)
         if self.attn is not None:
-            x = x + self.attn(norm(x), None, block_mask)
+            x = x + self.attn(norm(x), None, block_mask) + weighted_x
         x = x + self.mlp(norm(x))
         return x
 
@@ -410,15 +413,10 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
-        # U-net design by @brendanh0gan
-        skip_connections = []
-        n = self.num_layers//2
+        n = self.num_layers // 2
+        prev_outputs = torch.zeros(len(self.blocks)+1, *x.shape, device=x.device)
         for i in range(len(self.blocks)):
-            if i >= n:
-                x = x + skip_connections.pop()
-            x = self.blocks[i](x, None, x0, block_masks[i])
-            if i < n:
-                skip_connections.append(x)
+            x = self.blocks[i](x, None, x0, block_masks[i], prev_outputs)
 
         x = norm(x)
         logits = self.lm_head(x).float()
