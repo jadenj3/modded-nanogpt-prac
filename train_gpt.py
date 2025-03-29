@@ -458,51 +458,22 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, max_layers=12):
         super().__init__()
+        # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        self.residual_weights = nn.Parameter(torch.ones(max_layers + 1))
+        self.residual_weights = nn.Parameter(torch.ones(max_layers + 1))  # +1 for input
+        # self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask,
-                prev_outputs):  # Updated type hint
-        # --- Attention (conditional) ---
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs: Tensor):
+        # x = self.lambdas[0] * x + self.lambdas[1] * x0
+        # weighted_x = torch.einsum('l,lbsd->bsd', self.residual_weights, prev_outputs)
         if self.attn is not None:
-            # Assuming norm is applied before attention/mlp as is common
-            x_norm = norm(x)
-            x = x + self.attn(x_norm, None, block_mask)
-        else:
-            # If attn is skipped, maybe norm still needed for MLP?
-            # If norm is part of attn/mlp, adjust accordingly.
-            # Assuming norm is separate:
-            x_norm = norm(x)  # Calculate norm if not done above
-
-        # --- MLP ---
-        # Apply norm before MLP if it wasn't already computed and used by attn
-        # If attn exists, x_norm is already computed. If not, compute it.
-        # Let's assume norm should always happen before MLP
-        x_norm_for_mlp = norm(x)  # Or reuse x_norm if appropriate
-        x = x + self.mlp(x_norm_for_mlp)
-
-        # --- Residual connection with previous outputs (Vectorized) ---
-        if prev_outputs:  # Only proceed if the list is not empty
-            num_prev = len(prev_outputs)
-            # Stack tensors in the list along a new dimension (dim=0)
-            # Shape becomes [num_prev, Batch, Sequence, Dim]
-            stacked_prevs = torch.stack(prev_outputs, dim=0)
-
-            # Select the first 'num_prev' weights
-            # Shape: [num_prev]
-            weights = self.residual_weights[:num_prev]
-
-            # Perform the weighted sum using einsum (efficient)
-            # 'l' iterates over the stacked dimension (num_prev)
-            # 'l,lbsd->bsd' means multiply weights[l] with stacked_prevs[l,:,:,:]
-            # and sum the results across the 'l' dimension.
-            # Result shape: [Batch, Sequence, Dim]
-            residual_sum = torch.einsum('l,lbsd->bsd', weights, stacked_prevs)
-
-            # Add the weighted sum to x
-            x = x + residual_sum
-
+            x = x + self.attn(norm(x), None, block_mask)
+        x = x + self.mlp(norm(x))
+        # Check if prev_outputs is empty
+        if prev_outputs:  # This check handles if the prev_outputs list is empty, and skips the weighted sum if it is.
+            for i in range(len(prev_outputs)):
+                x = x + self.residual_weights[i] * prev_outputs[i]
         return x
 
 
