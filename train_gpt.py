@@ -461,19 +461,17 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        self.residual_weights = nn.Parameter(torch.ones(max_layers + 1))  # +1 for input
+        self.residual_weights = nn.Parameter(torch.ones(13, 1, 768))  # +1 for input
         # self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs: Tensor):
-        # x = self.lambdas[0] * x + self.lambdas[1] * x0
-        # weighted_x = torch.einsum('l,lbsd->bsd', self.residual_weights, prev_outputs)
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs: list[Tensor]):
         if self.attn is not None:
             x = x + self.attn(norm(x), None, block_mask)
         x = x + self.mlp(norm(x))
-        # Check if prev_outputs is empty
-        if prev_outputs:  # This check handles if the prev_outputs list is empty, and skips the weighted sum if it is.
-            for i in range(len(prev_outputs)):
-                x = x + self.residual_weights[i] * prev_outputs[i]
+
+        prevs = torch.cat(prev_outputs, dim=0)  # << correct fix here
+        x = x + (self.residual_weights[:prevs.size(0)] * prevs).sum(dim=0, keepdim=True)
+
         return x
 
 
