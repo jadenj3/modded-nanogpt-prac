@@ -470,8 +470,10 @@ class Block(nn.Module):
         if self.attn is not None:
             x = x + self.attn(norm(x), None, block_mask)
         x = x + self.mlp(norm(x))
-        for i in range(len(prev_outputs)):
-            x = x + self.residual_weights[i] * prev_outputs[i]
+        # Check if prev_outputs is empty
+        if prev_outputs:  # This check handles if the prev_outputs list is empty, and skips the weighted sum if it is.
+            for i in range(len(prev_outputs)):
+                x = x + self.residual_weights[i] * prev_outputs[i]
         return x
 
 
@@ -756,7 +758,8 @@ for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        if param.grad is not None:
+            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -819,7 +822,8 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        if param.grad is not None:
+            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     # set optimization hyperparameters
     for opt in optimizers:
         for group in opt.param_groups:
