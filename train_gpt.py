@@ -343,14 +343,18 @@ class Block(nn.Module):
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
         if layer_idx > 0:
-            self.layer_weights = nn.Parameter(torch.ones(layer_idx))
+            self.layer_weights = nn.Parameter(torch.ones(layer_idx, 768))
         else:
             self.layer_weights = None  # layer 0 doesn't use any previous outputs
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         for i in range(len(prev_outputs)):
-          x = x + self.layer_weights[i]*prev_outputs[i]
+            # Apply per-feature weights through element-wise multiplication
+            # Reshape weights to [1, 1, dim] for proper broadcasting
+            # Assuming prev_outputs[i] has shape [batch_size, seq_len, dim]
+            feature_weights = self.layer_weights[i].view(1, 1, -1)
+            x = x + prev_outputs[i] * feature_weights
         if self.attn is not None:
             x = x + self.attn(norm(x), ve, block_mask)
         x = x + self.mlp(norm(x))
