@@ -343,18 +343,15 @@ class Block(nn.Module):
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
         if layer_idx > 0:
-            self.layer_weights = nn.Parameter(torch.ones(layer_idx, 768))
+            self.layer_weights = nn.Parameter(torch.zeros(layer_idx))
         else:
             self.layer_weights = None  # layer 0 doesn't use any previous outputs
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
+        x = norm(x)
         for i in range(len(prev_outputs)):
-            # Apply per-feature weights through element-wise multiplication
-            # Reshape weights to [1, 1, dim] for proper broadcasting
-            # Assuming prev_outputs[i] has shape [batch_size, seq_len, dim]
-            feature_weights = self.layer_weights[i].view(1, 1, -1)
-            x = x + prev_outputs[i] * feature_weights
+          x = x + self.layer_weights[i]*prev_outputs[i]
         if self.attn is not None:
             x = x + self.attn(norm(x), ve, block_mask)
         x = x + self.mlp(norm(x))
@@ -383,7 +380,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         self.num_layers = num_layers
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -441,10 +438,15 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         prev_outputs = []
+        skip_connections = []
         n = self.num_layers//2
         for i in range(len(self.blocks)):
+            if i >= n:
+                x = x + self.skip_weights[i - n] * skip_connections.pop()
             x = self.blocks[i](x, ve[i], x0, block_masks[i], prev_outputs)
             prev_outputs.append(x)
+            if i < n:
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x).float()
