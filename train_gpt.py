@@ -342,20 +342,14 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
-        if layer_idx > 0:
-            self.layer_weights = nn.Parameter(torch.zeros(layer_idx))
-        else:
-            self.layer_weights = None  # layer 0 doesn't use any previous outputs
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_outputs):
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
-        x = norm(x)
-        for i in range(len(prev_outputs)):
-          x = x + self.layer_weights[i]*prev_outputs[i]
         if self.attn is not None:
             x = x + self.attn(norm(x), ve, block_mask)
         x = x + self.mlp(norm(x))
         return x
+
 
 # -----------------------------------------------------------------------------
 # The main model
@@ -374,13 +368,12 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
-        self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128),
-                                    use_fp8=False, x_s=(model_dim**0.5)/448, w_s=24/448, grad_s=1/448)
-        self.lm_head.weight.detach().zero_() # @Grad62304977
+        self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128), use_fp8=False, x_s=2.0,
+                                    w_s=2.0 ** 9, grad_s=2.0 ** 19)
+        self.lm_head.weight.detach().zero_()  # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.num_layers = num_layers
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -410,6 +403,7 @@ class GPT(nn.Module):
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
+
         def build_bm(window_size_blocks: Tensor) -> BlockMask:
             return BlockMask.from_kv_blocks(
                 torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
@@ -419,6 +413,7 @@ class GPT(nn.Module):
                 BLOCK_SIZE=BLOCK_SIZE,
                 mask_mod=document_causal,
             )
+
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
@@ -431,29 +426,27 @@ class GPT(nn.Module):
         assert len(ve) == len(self.blocks)
 
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
-        block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
+        block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, long_bm, short_bm, short_bm,
+                       short_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
 
-        x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
+        x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
-        prev_outputs = []
-        #skip_connections = []
-        n = self.num_layers//2
+        skip_connections = []
+        n = len(self.skip_weights)
         for i in range(len(self.blocks)):
-            #if i >= n:
-                #x = x + self.skip_weights[i - n] * skip_connections.pop()
-                #x = norm(x)
-            x = self.blocks[i](x, ve[i], x0, block_masks[i], prev_outputs)
-            prev_outputs.append(x)
-            #if i < n:
-                #skip_connections.append(x)
+            if i >= n:
+                x = x + self.skip_weights[i - n] * skip_connections.pop()
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            if i < n:
+                skip_connections.append(x)
 
         x = norm(x)
-        logits = self.lm_head(x).float()
+        logits = self.lm_head(x)
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
-        logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1)**0.5))
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq, reduction='sum' if self.training else 'mean')
+        logits = 30 * torch.sigmoid(logits.float() / 7.5)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
         return loss
 
 
