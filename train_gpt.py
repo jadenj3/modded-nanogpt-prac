@@ -322,10 +322,10 @@ class CausalSelfAttention(nn.Module):
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
-            q = self.lambdas[2] * q + self.lambdas[3] * ve.view_as(q) # @KoszarskyB & @Grad62304977
+            #q = self.lambdas[2] * q + self.lambdas[3] * ve.view_as(q) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = self.lambdas[0] * v
-            q = self.lambdas[2] * q
+            #q = self.lambdas[2] * q
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         if self.skip_lambda is not None:
