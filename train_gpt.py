@@ -332,9 +332,9 @@ class CausalSelfAttention(nn.Module):
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         if self.skip_lambda is not None:
             q_cache, k_cache, v_cache = attn_cache.pop()
-            #v = v + self.skip_lambda[0]*v_cache
-            #q = q + self.skip_lambda[1]*q_cache
-            #k = k + self.skip_lambda[2]*k_cache
+            v = v + self.skip_lambda[0]*v_cache
+            q = q + self.skip_lambda[1]*q_cache
+            k = k + self.skip_lambda[2]*k_cache
         else:
             attn_cache.append((q,k,v))
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=15/self.head_dim).transpose(1, 2)
@@ -708,3 +708,7 @@ print0(
     console=True,
 )
 dist.destroy_process_group()
+
+for i, block in enumerate(model.blocks):
+    if block.attn is not None and block.attn.skip_lambda is not None:
+        print(f"Layer {i} skip_lambda: {block.attn.skip_lambda.data}")
