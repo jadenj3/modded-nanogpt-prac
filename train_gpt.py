@@ -304,7 +304,7 @@ class CausalSelfAttention(nn.Module):
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
         self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
-        self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5, 0.5, 0.5]))
+        self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]))
         self.rotary = Rotary(head_dim, max_seq_len)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
@@ -322,10 +322,12 @@ class CausalSelfAttention(nn.Module):
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
-            #q = self.lambdas[2] * q + self.lambdas[3] * ve.view_as(q) # @KoszarskyB & @Grad62304977
+            q = self.lambdas[2] * q + self.lambdas[3] * ve.view_as(q) # @KoszarskyB & @Grad62304977
+            k = self.lambdas[4] * k + self.lambdas[5] * ve.view_as(k)
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = self.lambdas[0] * v
-            #q = self.lambdas[2] * q
+            q = self.lambdas[2] * q
+            k = self.lambdas[4] * k
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         if self.skip_lambda is not None:
