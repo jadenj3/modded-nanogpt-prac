@@ -309,7 +309,7 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
         if layer_idx >= (12//2):
-            self.skip_lambda = nn.Parameter(torch.tensor([1.0]))  # scales for skip connection
+            self.skip_lambda = nn.Parameter(torch.tensor([1.0,1.0,1.0]))  # scales for skip connection
         else:
           self.skip_lambda = None
         #self.skip_lambdas = nn.Parameter(torch.tensor([0.0]))  # scales for skip connection
@@ -322,20 +322,21 @@ class CausalSelfAttention(nn.Module):
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
-            q = self.lambdas[2] * q + self.lambdas[3] * ve.view_as(q) # @KoszarskyB & @Grad62304977
+            #q = self.lambdas[2] * q + self.lambdas[3] * ve.view_as(q) # @KoszarskyB & @Grad62304977
             #k = self.lambdas[4] * k + self.lambdas[5] * ve.view_as(k)
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = self.lambdas[0] * v
-            q = self.lambdas[2] * q
+            #q = self.lambdas[2] * q
             #k = self.lambdas[4] * k
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         if self.skip_lambda is not None:
-            #v = v + self.skip_lambda[0]*attn_cache.pop()
-            #q = self.skip_lambda * q
-            pass
+            q_cache, k_cache, v_cache = attn_cache.pop()
+            #v = v + self.skip_lambda[0]*v_cache
+            #q = q + self.skip_lambda[1]*q_cache
+            #k = k + self.skip_lambda[2]*k_cache
         else:
-            attn_cache.append(v)
+            attn_cache.append((q,k,v))
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=15/self.head_dim).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
