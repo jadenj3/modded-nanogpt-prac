@@ -607,7 +607,8 @@ for _ in range(warmup_steps):
     inputs, targets = next(train_loader)
     model(inputs, targets, window_size_blocks(128)).backward()
     for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        if param.grad is not None:
+            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -669,7 +670,8 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, window_size_blocks(window_size)).backward()
     for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        if param.grad is not None:
+            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     # momentum warmup for Muon
     frac = min(step / 300, 1)
     for group in optimizer2.param_groups:
