@@ -318,8 +318,9 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         if self.skip_lambda is not None:
-            v = v + self.skip_lambda[0]*attn_cache.pop()
+            #v = v + self.skip_lambda[0]*attn_cache.pop()
             #q = self.skip_lambda * q
+            pass
         else:
             attn_cache.append(v)
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=15/self.head_dim).transpose(1, 2)
