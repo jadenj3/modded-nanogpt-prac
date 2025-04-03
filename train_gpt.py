@@ -17,7 +17,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-#torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
+torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
@@ -184,7 +184,7 @@ class Muon(torch.optim.Optimizer):
             def update_prev(): # optimized Muon implementation contributed by @YouJiacheng
                 handle.wait()
                 for p_world, g_world in zip(params_world, update_buffer_views):
-                    p_world.mul_(1 - group["lr"] * group["weight_decay"])
+                    p_world.mul_(1 - group["lr"] * group["weight_decay"] * getattr(p_world, "wd_mul", 1.0))
                     p_world.add_(g_world.view_as(p_world),
                                  alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1))**0.5)
             for base_i in range(len(params))[::self.world_size]:
@@ -279,6 +279,7 @@ class CausalSelfAttention(nn.Module):
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
+        v = norm(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
@@ -295,6 +296,8 @@ class MLP(nn.Module):
         self.c_fc = CastedLinear(dim, hdim)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
+        self.c_fc.weight.wd_mul = 2.0
+        self.c_proj.weight.wd_mul = 2.0
 
     def forward(self, x: Tensor):
         x = self.c_fc(x)
@@ -308,13 +311,22 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
+        self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
+        if not self.training:
+            self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            x = x + self.attn(norm(x), ve, block_mask)
-        x = x + self.mlp(norm(x))
+            z = self.attn(x, ve, block_mask)
+            if not self.training:
+                self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
+            x = x + z
+        z = self.mlp(norm(x))
+        if not self.training:
+            self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
+        x = x + z
         return x
 
 # -----------------------------------------------------------------------------
@@ -396,9 +408,14 @@ class GPT(nn.Module):
         # U-net design by @brendanh0gan
         skip_connections = []
         n = len(self.skip_weights)
+        skip_map = {
+            9: 6,
+            10: 4,
+            11: 2,
+        }
         for i in range(len(self.blocks)):
-            if i >= n:
-                x = x + self.skip_weights[i - n] * skip_connections.pop()
+            if i in skip_map:
+                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
@@ -452,8 +469,8 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6950 # number of iterations to run
-    cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate - increased by @YouJiacheng
+    num_iterations = 6710 # number of iterations to run
+    cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -514,15 +531,18 @@ for param in model.parameters():
 hidden_matrix_params = [p for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
 embed_params = [p for n, p in model.named_parameters() if "embed" in n]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
-head_params = [model.lm_head.weight]
+head_params: list[nn.Parameter] = [model.lm_head.weight]
 
 # init the optimizer(s)
-adam_params = [dict(params=head_params, lr=0.1/1024**0.5), dict(params=embed_params, lr=0.3), dict(params=scalar_params, lr=0.015)]
+adam_param_groups = [dict(params=head_params, lr=0.1/1024**0.5), dict(params=embed_params, lr=0.3), dict(params=scalar_params, lr=0.015)]
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
-optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
+optimizer1 = torch.optim.Adam(adam_param_groups, betas=(0.8, 0.95), eps=1e-10, fused=True)
 optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.95, rank=rank, world_size=world_size)
-optimizers = [optimizer1, optimizer2]
+optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
+def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
+    return [p for group in opt.param_groups for p in group["params"]]
+opt2params = {opt: opt_params(opt) for opt in optimizers}
 for opt in optimizers:
     for group in opt.param_groups:
         group["initial_lr"] = group["lr"]
@@ -575,6 +595,7 @@ del initial_state
 #        Training and validation       #
 ########################################
 
+torch.cuda.reset_peak_memory_stats()
 train_loader = distributed_data_generator(args.train_files, world_size * args.train_seq_len, rank, world_size)
 training_time_ms = 0
 # start the clock
@@ -603,7 +624,11 @@ for step in range(train_steps + 1):
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-        print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
+        print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
+        if hasattr(model, "skip_weights"):
+            print0(s=f"{model.skip_weights}")
+        print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
+        print0(s="\n".join([f"{i} {block.record.sqrt().tolist()}" for i, block in enumerate(model.blocks)]))
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -620,8 +645,10 @@ for step in range(train_steps + 1):
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
-    for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+    opt2works = {
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
+        for opt, params in opt2params.items()
+    }
     # set optimization hyperparameters
     for opt in optimizers:
         for group in opt.param_groups:
@@ -631,6 +658,8 @@ for step in range(train_steps + 1):
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
     # step the optimizers
     for opt in optimizers:
+        for work in opt2works[opt]:
+            work.wait()
         opt.step()
     # null the gradients
     model.zero_grad(set_to_none=True)
