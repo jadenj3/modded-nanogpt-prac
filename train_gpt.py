@@ -17,43 +17,10 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-import random
-#torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
-def seed_everything(seed):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(42)
+torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
-
-class InPlaceSetSlice(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, full_tensor, last_slice, x_idx, x_val):
-        full_tensor[x_idx] = x_val
-        ctx.x_idx = x_idx
-        ret = torch.Tensor().to(full_tensor.device)
-        ret.set_(full_tensor[:x_idx + 1])
-        return ret
-
-    @staticmethod
-    def backward(ctx, grad_out):
-        if ctx.x_idx == 0:
-            return None, None, None, grad_out[ctx.x_idx]
-        else:
-            return None, grad_out[:ctx.x_idx], None, grad_out[ctx.x_idx]
-
-
-def apply_inplace_set(x_acc, x_idx, x_val):
-    full_tensor, last_slice = x_acc
-    new_slice = InPlaceSetSlice.apply(full_tensor, last_slice, x_idx, x_val)
-    return full_tensor, new_slice
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
