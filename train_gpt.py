@@ -435,7 +435,10 @@ class GPT(nn.Module):
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-        x_acc = (torch.zeros((self.num_layers//2 + 1, *x.shape), device=x.device, dtype=x.dtype), None)
+        x_acc = (
+            torch.zeros((self.num_layers // 2 + 1, *x.shape), device=x.device, dtype=x.dtype),
+            torch.zeros_like(x)  # explicitly avoid None
+        )
         x_acc = apply_inplace_set(x_acc, 0, x)
         # U-net design by @brendanh0gan
         skip_connections = []
