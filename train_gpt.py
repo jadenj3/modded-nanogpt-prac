@@ -421,8 +421,9 @@ class GPT(nn.Module):
         n = len(self.skip_weights)
         for i in range(len(self.blocks)):
             if i >= n:
-                x = x + self.first_weights[i - n] * skip_connections[0]
-                x = x + self.skip_weights[i - n] * skip_connections.pop()
+                #x = x + self.first_weights[i - n] * skip_connections[0]
+                #x = x + self.skip_weights[i - n] * skip_connections.pop()
+                pass
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
