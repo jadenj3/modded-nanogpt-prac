@@ -363,12 +363,12 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
-        self.residual_weights = nn.Parameter(torch.empty(num_layers, num_layers))
+        self.skip_weights = nn.Parameter(torch.empty(num_layers//2))
+        #self.residual_weights = nn.Parameter(torch.empty(num_layers, model_dim))
         # Apply Kaiming uniform initialization (what nn.Linear uses by default)
-        fan_in = num_layers  # Each row has num_layers inputs
+        fan_in = num_layers//2  # Each row has num_layers inputs
         bound = 1 / math.sqrt(fan_in)
-        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        init.kaiming_uniform_(self.skip_weights, a=math.sqrt(5))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -426,21 +426,22 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         prev_connections = [x0]
-        #skip_connections = []
-        #n = len(self.skip_weights)
+        skip_connections = []
+        n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
             11: 2,
         }
+        '''
         for i in range(len(self.blocks)):
             x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
             for j in range(len(prev_connections)):
                 x = x + self.residual_weights[i][j]*prev_connections[j]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            prev_connections.append(x)
+            prev_connections.append(x)'''
 
-        '''for i in range(len(self.blocks)):
+        for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             if i >= n:
@@ -448,7 +449,7 @@ class GPT(nn.Module):
                     x = x + self.residual_weights[j]*skip_connections[j]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)'''
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
