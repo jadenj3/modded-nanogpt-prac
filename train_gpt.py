@@ -368,10 +368,8 @@ class GPT(nn.Module):
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
         self.residual_weights = nn.Parameter(torch.empty(num_layers, model_dim))
-        # Apply Kaiming uniform initialization (what nn.Linear uses by default)
-        fan_in = num_layers//2  # Each row has num_layers inputs
-        bound = 1 / math.sqrt(fan_in)
-        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        # Apply Kaiming normal initialization
+        nn.init.kaiming_normal_(self.residual_weights, a=math.sqrt(5), mode='fan_in', nonlinearity='leaky_relu')
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
