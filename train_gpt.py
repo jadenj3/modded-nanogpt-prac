@@ -1,5 +1,9 @@
+import math
 import os
 import sys
+
+from torch.nn import init
+
 with open(sys.argv[0]) as f:
     code = f.read() # read the code of this file ASAP, for logging
 import uuid
@@ -350,7 +354,11 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
+        self.residual_weights = nn.Parameter(torch.empty(num_layers, num_layers))
+        # Apply Kaiming uniform initialization (what nn.Linear uses by default)
+        fan_in = num_layers  # Each row has num_layers inputs
+        bound = 1 / math.sqrt(fan_in)
+        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
