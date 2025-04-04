@@ -375,7 +375,8 @@ class GPT(nn.Module):
         self.num_layers = num_layers
         self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         self.weights = nn.ModuleList([
-            nn.Linear(model_dim, 1, bias=False) for _ in range(num_layers // 2)
+            nn.Linear(model_dim, 1, bias=False).to(dtype=torch.bfloat16)
+            for _ in range(num_layers // 2)
         ])
         for module in self.weights:
             module.weight.data.zero_()
