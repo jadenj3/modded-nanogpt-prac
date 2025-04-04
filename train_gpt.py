@@ -369,7 +369,7 @@ class GPT(nn.Module):
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.float16))
+        self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.bfloat16))
 
         # Update Kaiming initialization
         fan_in = model_dim  # Each layer processes inputs with hidden_size features
