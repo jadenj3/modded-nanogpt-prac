@@ -408,17 +408,14 @@ class GPT(nn.Module):
         # U-net design by @brendanh0gan
         skip_connections = []
         n = len(self.skip_weights)
-        skip_map = {
-            9: 6,
-            10: 4,
-            11: 2,
-        }
         for i in range(len(self.blocks)):
-            if i in skip_map:
-                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
+            if i >= n:
+                for j in range(len(skip_connections)):
+                    x = x + self.skip_weights[j]*skip_connections[j]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
+
 
         x = norm(x)
         logits = self.lm_head(x)
