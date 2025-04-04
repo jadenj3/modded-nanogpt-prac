@@ -345,6 +345,8 @@ class Block(nn.Module):
 
 # -----------------------------------------------------------------------------
 # The main model
+from collections import deque
+
 
 def next_multiple_of_n(v: float | int, *, n: int):
     return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
@@ -428,7 +430,7 @@ class GPT(nn.Module):
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
-        prev_connections = [x0]
+        #prev_connections = [x0]
         #skip_connections = []
         #n = len(self.skip_weights)
         skip_map = {
@@ -436,13 +438,15 @@ class GPT(nn.Module):
             10: 4,
             11: 2,
         }
-
+        queue = deque(x0)
         for i in range(len(self.blocks)):
             x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
-            for j in range(len(prev_connections)):
-                x = x + self.residual_weights[i][j]*prev_connections[j]
+            for j in range(len(queue)):
+                x = x + self.residual_weights[i][j]*queue[j]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            prev_connections.append(x)
+            if len(queue) == 2:
+                queue.popleft()
+            queue.append(x)
         '''
         for i in range(len(self.blocks)):
             if i in skip_map:
