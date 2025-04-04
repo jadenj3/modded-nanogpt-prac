@@ -408,16 +408,16 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         skip_connections = [x0]
-        n = len(self.skip_weights)
+        #n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
             11: 2,
         }
         for i in range(len(self.blocks)):
-            x = torch.zeros(x0.shape, device=x.device, dtype=x.dtype)
+            x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
             for j in range(len(skip_connections)):
-                x = x + self.skip_weights[i][j]*skip_connections[j]
+                x = x + self.residual_weights[i][j]*skip_connections[j]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             skip_connections.append(x)
 
