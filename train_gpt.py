@@ -374,6 +374,7 @@ class GPT(nn.Module):
         # Update Kaiming initialization
         fan_in = model_dim  # Each layer processes inputs with hidden_size features
         init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        self.model_dim = model_dim
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -403,7 +404,6 @@ class GPT(nn.Module):
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
-        self.model_dim = model_dim
         def build_bm(window_size_blocks: Tensor) -> BlockMask:
             return BlockMask.from_kv_blocks(
                 torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
