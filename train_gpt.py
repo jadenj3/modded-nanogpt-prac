@@ -26,6 +26,16 @@ torch._inductor.config.coordinate_descent_tuning = True # we have banned this fl
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
 
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
+seed_everything(42)
+
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
     @torch.compile
@@ -353,7 +363,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         self.residual_weights = nn.Parameter(torch.empty(num_layers, num_layers))
         # Apply Kaiming uniform initialization (what nn.Linear uses by default)
         fan_in = num_layers  # Each row has num_layers inputs
@@ -415,8 +425,9 @@ class GPT(nn.Module):
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
-        skip_connections = [x0]
-        #n = len(self.skip_weights)
+        prev_connections = [x0]
+        skip_connections = []
+        n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
@@ -424,10 +435,14 @@ class GPT(nn.Module):
         }
         for i in range(len(self.blocks)):
             x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
-            for j in range(len(skip_connections)):
-                x = x + self.residual_weights[i][j]*skip_connections[j]
+            for j in range(len(prev_connections)):
+                x = x + self.residual_weights[i][j]*prev_connections[j]
+            if i in skip_map:
+                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            skip_connections.append(x)
+            prev_connections.append(x)
+            if i < n:
+                skip_connections.append(x)
 
         '''for i in range(len(self.blocks)):
             if i in skip_map:
