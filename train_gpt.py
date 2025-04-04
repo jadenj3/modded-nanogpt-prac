@@ -369,10 +369,10 @@ class GPT(nn.Module):
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.empty(num_layers, 2))
+        self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim))
 
-        # Apply Kaiming uniform initialization
-        fan_in = 2  # Each row processes at most 2 inputs from the queue
+        # Update Kaiming initialization
+        fan_in = model_dim  # Each layer processes inputs with hidden_size features
         init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
@@ -403,6 +403,7 @@ class GPT(nn.Module):
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
+        self.model_dim = model_dim
         def build_bm(window_size_blocks: Tensor) -> BlockMask:
             return BlockMask.from_kv_blocks(
                 torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
@@ -443,7 +444,9 @@ class GPT(nn.Module):
         for i in range(len(self.blocks)):
             x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
             for j in range(len(queue)):
-                x = x + self.residual_weights[i][j]*queue[j]
+                weight_shape = [1] * (len(queue[j].shape) - 1) + [self.model_dim]
+                # Apply feature-specific weights - using the same weight for all queue items
+                x = x + queue[j] * self.residual_weights[i][0].view(*weight_shape)
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if len(queue) == 1:
                 queue.popleft()
