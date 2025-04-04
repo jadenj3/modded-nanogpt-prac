@@ -363,7 +363,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         self.residual_weights = nn.Parameter(torch.empty(num_layers, num_layers))
         # Apply Kaiming uniform initialization (what nn.Linear uses by default)
         fan_in = num_layers  # Each row has num_layers inputs
