@@ -32,6 +32,29 @@ seed_everything(42)
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
 
+class InPlaceSetSlice(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, full_tensor, last_slice, x_idx, x_val):
+        full_tensor[x_idx] = x_val
+        ctx.x_idx = x_idx
+        ret = torch.Tensor().to(full_tensor.device)
+        ret.set_(full_tensor[:x_idx + 1])
+        return ret
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        if ctx.x_idx == 0:
+            return None, None, None, grad_out[ctx.x_idx]
+        else:
+            return None, grad_out[:ctx.x_idx], None, grad_out[ctx.x_idx]
+
+
+def apply_inplace_set(x_acc, x_idx, x_val):
+    full_tensor, last_slice = x_acc
+    new_slice = InPlaceSetSlice.apply(full_tensor, last_slice, x_idx, x_val)
+    return full_tensor, new_slice
+
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
     @torch.compile
@@ -477,7 +500,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6710 # number of iterations to run
+    num_iterations = 375 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
