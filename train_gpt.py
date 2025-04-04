@@ -366,7 +366,7 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.empty(num_layers // 2))
         fan_in = num_layers // 2
         bound = 1 / math.sqrt(fan_in)
-        nn.init.uniform_(self.skip_weights, -bound, bound)
+        nn.init.normal_(self.skip_weights, -bound, bound)
         #self.residual_weights = nn.Parameter(torch.empty(num_layers, model_dim))
         # Apply Kaiming uniform initialization (what nn.Linear uses by default)
         #fan_in = num_layers//2  # Each row has num_layers inputs
