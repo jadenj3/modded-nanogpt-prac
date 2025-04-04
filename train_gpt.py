@@ -364,9 +364,9 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.empty(num_layers // 2))
-        fan_in = num_layers // 2
-        std = 1 / math.sqrt(fan_in)  # Standard deviation
-        nn.init.normal_(self.skip_weights, mean=0.0, std=std)
+        #fan_in = num_layers // 2
+        #std = 1 / math.sqrt(fan_in)  # Standard deviation
+        #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
         self.residual_weights = nn.Parameter(torch.empty(num_layers, model_dim))
         # Apply Kaiming uniform initialization (what nn.Linear uses by default)
         fan_in = num_layers//2  # Each row has num_layers inputs
