@@ -349,8 +349,8 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers // 2))
+        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -407,7 +407,7 @@ class GPT(nn.Module):
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
-        skip_connections = []
+        skip_connections = [x0]
         n = len(self.skip_weights)
         skip_map = {
             9: 6,
@@ -415,6 +415,13 @@ class GPT(nn.Module):
             11: 2,
         }
         for i in range(len(self.blocks)):
+            x = torch.zeros(x0.shape, device=x.device, dtype=x.dtype)
+            for j in range(len(skip_connections)):
+                x = x + self.skip_weights[i][j]*skip_connections[j]
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            skip_connections.append(x)
+
+        '''for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             if i >= n:
@@ -422,7 +429,7 @@ class GPT(nn.Module):
                     x = x + self.residual_weights[j]*skip_connections[j]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)
+                skip_connections.append(x)'''
 
         x = norm(x)
         logits = self.lm_head(x)
