@@ -375,12 +375,12 @@ class GPT(nn.Module):
         self.num_layers = num_layers
         self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
         self.weights = nn.ModuleList([
-            nn.Linear(model_dim, 1, bias=False).to(dtype=torch.bfloat16)
-            for _ in range(num_layers // 2)
+            nn.Linear(self.num_layers // 2 + 1, 1, bias=False).to(torch.bfloat16)
+            for _ in range(self.num_layers // 2)
         ])
         for module in self.weights:
             module.weight.data.zero_()
-            module.weight.data[0, -1] = 1.
+            module.weight.data[0, 0] = 1.
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
