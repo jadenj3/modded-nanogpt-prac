@@ -22,29 +22,6 @@ torch._inductor.config.coordinate_descent_tuning = True # we have banned this fl
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
 
-class InPlaceSetSlice(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, full_tensor, last_slice, x_idx, x_val):
-        full_tensor[x_idx] = x_val
-        ctx.x_idx = x_idx
-        ret = torch.Tensor().to(full_tensor.device, dtype=full_tensor.dtype)
-        ret.set_(full_tensor[:x_idx + 1])
-        return ret
-
-    @staticmethod
-    def backward(ctx, grad_out):
-        if ctx.x_idx == 0:
-            return None, None, None, grad_out[ctx.x_idx]
-        else:
-            return None, grad_out[:ctx.x_idx], None, grad_out[ctx.x_idx]
-
-
-def apply_inplace_set(x_acc, x_idx, x_val):
-    full_tensor, last_slice = x_acc
-    new_slice = InPlaceSetSlice.apply(full_tensor, last_slice, x_idx, x_val)
-    return full_tensor, new_slice
-
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
     @torch.compile
@@ -372,15 +349,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.num_layers = num_layers
         self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
-        self.weights = nn.ModuleList([
-            nn.Linear(self.num_layers // 2 + 1, 1, bias=False).to(torch.bfloat16)
-            for _ in range(self.num_layers // 2)
-        ])
-        for module in self.weights:
-            module.weight.data.zero_()
-            module.weight.data[0, 0] = 1.
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -435,11 +404,7 @@ class GPT(nn.Module):
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-        x_acc = (
-            torch.zeros((self.num_layers // 2 + 1, *x.shape), device=x.device, dtype=x.dtype),
-            torch.zeros_like(x)  # explicitly avoid None
-        )
-        x_acc = apply_inplace_set(x_acc, 0, x)
+
         # U-net design by @brendanh0gan
         skip_connections = []
         n = len(self.skip_weights)
@@ -454,12 +419,6 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
-                x_acc = apply_inplace_set(x_acc, i + 1, x)
-            else:
-                residuals_tensor = x_acc[0]  # (num_residuals, batch, seq_len, model_dim)
-                weights = self.weights[i - self.num_layers // 2].weight.view(-1)
-                # explicit dot product along residual dimension (dim=0)
-                x = torch.tensordot(weights, residuals_tensor, dims=([0], [0]))
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -623,8 +582,7 @@ for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
-        if param.grad is not None:
-            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -688,10 +646,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2works = {
-        opt: [
-            dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True)
-            for p in params if p.grad is not None  # explicitly skip None gradients
-        ]
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
