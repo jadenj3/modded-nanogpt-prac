@@ -442,12 +442,11 @@ class GPT(nn.Module):
 
         queue = deque(x0)
         for i in range(len(self.blocks)):
-            x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
-            for j in range(len(queue)):
-                weight_shape = [1] * (len(queue[j].shape) - 1) + [self.model_dim]
-                # Apply feature-specific weights - using the same weight for all queue items
-                x = x + queue[j] * self.residual_weights[i][0].view(*weight_shape)
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            # Apply directly to blocks instead of accumulating first
+            x = self.blocks[i](
+                queue[-1] * self.residual_weights[i][0].view(*[1] * (len(queue[-1].shape) - 1) + [self.model_dim]),
+                ve[i], x0, block_masks[i]
+            )
             if len(queue) == 1:
                 queue.popleft()
             queue.append(x)
