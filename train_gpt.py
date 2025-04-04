@@ -447,7 +447,7 @@ class GPT(nn.Module):
                 weights = self.residual_weights[i][0].to(dtype=queue[j].dtype)
                 weight_shape = [1] * (len(queue[j].shape) - 1) + [self.model_dim]
                 # Apply feature-specific weights - using the same weight for all queue items
-                x = x + queue[j] * self.residual_weights[i][0].view(*weight_shape)
+                x = x + queue[j] * weights.view(*weight_shape)
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if len(queue) == 1:
                 queue.popleft()
