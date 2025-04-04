@@ -367,11 +367,11 @@ class GPT(nn.Module):
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, model_dim))
+        self.residual_weights = nn.Parameter(torch.empty(num_layers, model_dim))
         # Apply Kaiming uniform initialization (what nn.Linear uses by default)
-        #fan_in = num_layers//2  # Each row has num_layers inputs
-        #bound = 1 / math.sqrt(fan_in)
-        #init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        fan_in = num_layers//2  # Each row has num_layers inputs
+        bound = 1 / math.sqrt(fan_in)
+        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -441,7 +441,7 @@ class GPT(nn.Module):
             x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
             for j in range(len(prev_connections)):
                 x = x + self.residual_weights[i][j]*prev_connections[j]
-            x = self.blocks[i](norm(x), ve[i], x0, block_masks[i])
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_connections.append(x)
         '''
         for i in range(len(self.blocks)):
