@@ -363,12 +363,15 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.empty(num_layers//2))
+        self.skip_weights = nn.Parameter(torch.empty(num_layers // 2))
+        fan_in = num_layers // 2
+        bound = 1 / math.sqrt(fan_in)
+        nn.init.uniform_(self.skip_weights, -bound, bound)
         #self.residual_weights = nn.Parameter(torch.empty(num_layers, model_dim))
         # Apply Kaiming uniform initialization (what nn.Linear uses by default)
-        fan_in = num_layers//2  # Each row has num_layers inputs
-        bound = 1 / math.sqrt(fan_in)
-        init.kaiming_uniform_(self.skip_weights, a=math.sqrt(5))
+        #fan_in = num_layers//2  # Each row has num_layers inputs
+        #bound = 1 / math.sqrt(fan_in)
+        #init.kaiming_uniform_(self.skip_weights, a=math.sqrt(5))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
