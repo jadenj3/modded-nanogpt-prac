@@ -666,7 +666,7 @@ for step in range(train_steps + 1):
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
         if hasattr(model, "skip_weights"):
             print0(s=f"{model.skip_weights}")
-        print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
+        #print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
         print0(s="\n".join([f"{i} {block.record.sqrt().tolist()}" for i, block in enumerate(model.blocks)]))
         model.train()
         # start the clock again
