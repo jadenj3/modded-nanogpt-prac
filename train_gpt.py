@@ -329,18 +329,28 @@ class Block(nn.Module):
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
         self.b_t = nn.Parameter(torch.ones(2, dtype=torch.bfloat16))
 
-    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
+    def forward(self, grn_input: Tensor, ve: Tensor | None, block_mask: BlockMask):
         attn_output = 0
         if self.attn is not None:
-            z = self.attn(x, ve, block_mask)
-            x = x + z
-        x = x + attn_output
-        z = self.mlp(norm(x))
-        final_output = x + z
+            # Assuming norm happens before attention based on your original code's MLP path
+            z_attn = self.attn(norm(grn_input), ve, block_mask)
+            if not self.training:
+                self.record[1].lerp_(torch.square(z_attn).mean(dtype=torch.float32), 0.5)
+            attn_output = z_attn
+
+        # First skip connection (residual connection around attention)
+        x_after_attn = grn_input + attn_output
+
+        # Apply MLP
+        z_mlp = self.mlp(norm(x_after_attn))
+
+        # Second skip connection (residual connection around MLP)
+        final_output = x_after_attn + z_mlp
+
         # Return both the final output for the next layer's G_t+1 calculation,
         # AND the result *before* the final skip connection if that's f_t(g_t(x)).
         # Let's assume f_t = attn_output + z_mlp for simplicity here.
-        residual_function_output = attn_output + z
+        residual_function_output = attn_output + z_mlp
 
         return final_output, residual_function_output
 
