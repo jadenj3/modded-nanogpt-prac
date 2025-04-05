@@ -454,8 +454,8 @@ class GPT(nn.Module):
         for i in range(len(self.blocks)):
             G_t = torch.stack([x0, previous_block_output], dim=-1)
             b_t = self.blocks[i].b_t  # Shape (2,)
-            grn_input = torch.matmul(G_t, b_t.unsqueeze(-1)).squeeze(-1)
-            final_output, _ = self.blocks[i](grn_input, ve[i], block_masks[i])
+            #grn_input = torch.matmul(G_t, b_t.unsqueeze(-1)).squeeze(-1)
+            final_output, _ = self.blocks[i](x, ve[i], block_masks[i])
             # Inside the loop for layer i:
             # Update for next iteration
             previous_block_output = final_output
