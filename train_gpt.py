@@ -453,10 +453,11 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
-            for k in range(len(prev_layers)):
-                cosine_similarity = F.cosine_similarity(x.detach(), prev_layers[k])
-                print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}")
-            prev_layers.append(x.detach())
+            with torch.no_grad():
+                for k in range(len(prev_layers)):
+                    cosine_similarity = F.cosine_similarity(x.detach(), prev_layers[k])
+                    print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}")
+                prev_layers.append(x.detach())
         prev_layers = []
 
         x = norm(x)
