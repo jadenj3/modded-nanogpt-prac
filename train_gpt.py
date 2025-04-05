@@ -455,8 +455,11 @@ class GPT(nn.Module):
                 skip_connections.append(x)
             prev_layers.append(x.detach())
             for k in range(len(prev_layers)):
-                cosine_similarity = F.cosine_similarity(x, prev_layers[k])
-                print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}", console=True)
+                with torch.no_grad():
+                    cosine_similarity = F.cosine_similarity(x.detach(), prev_layers[k].detach()).cpu()
+                    print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity.item()}",
+                           console=True)
+
         x = norm(x)
         logits = self.lm_head(x)
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
