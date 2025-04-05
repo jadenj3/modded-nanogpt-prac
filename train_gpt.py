@@ -440,18 +440,14 @@ class GPT(nn.Module):
             11: 2,
         }
 
-        queue = deque(x0)
+        # Before the loop:
+        prev_x = x0  # Start with the initial normalized embeddings
         for i in range(len(self.blocks)):
             x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
-            for j in range(len(queue)):
-                weights = self.residual_weights[i][0].to(dtype=queue[j].dtype)
-                weight_shape = [1] * (len(queue[j].shape) - 1) + [self.model_dim]
-                # Apply feature-specific weights - using the same weight for all queue items
-                x = x + queue[j] * weights.view(*weight_shape)
+            # Inside the loop for layer i:
+            x = self.residual_weights[i][0]*prev_x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            if len(queue) == 1:
-                queue.popleft()
-            queue.append(x)
+            prev_x = x
         '''
         for i in range(len(self.blocks)):
             if i in skip_map:
