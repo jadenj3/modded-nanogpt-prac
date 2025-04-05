@@ -440,14 +440,10 @@ class GPT(nn.Module):
             11: 2,
         }
 
-        # Before the loop:
-        prev_x = []  # Start with the initial normalized embeddings
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            if prev_x:
-                x = x + self.residual_weights[i][0]*prev_x[0]  # Get weights for layer i
+            x = x + self.residual_weights[i]*x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            prev_x.append(x)
         '''
         for i in range(len(self.blocks)):
             if i in skip_map:
