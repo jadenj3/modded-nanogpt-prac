@@ -329,7 +329,7 @@ class Block(nn.Module):
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
-        #x = self.lambdas[0] * x + self.lambdas[1] * x0
+        x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
@@ -369,7 +369,7 @@ class GPT(nn.Module):
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.empty(num_layers, 2, model_dim, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.bfloat16))
 
         # Update Kaiming initialization
         fan_in = model_dim  # Each layer processes inputs with hidden_size features
@@ -442,7 +442,7 @@ class GPT(nn.Module):
 
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            x =  self.residual_weights[i][1]*x + self.residual_weights[i][1]*x0 # Get weights for layer i
+            x =  self.residual_weights[i]*x # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''
         for i in range(len(self.blocks)):
