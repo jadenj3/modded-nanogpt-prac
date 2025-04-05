@@ -365,12 +365,12 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
-        self.relu = nn.ReLU()
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        #self.relu = nn.ReLU()
 
         # Update Kaiming initialization
         #fan_in = model_dim  # Each layer processes inputs with hidden_size features
