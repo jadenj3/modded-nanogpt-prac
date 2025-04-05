@@ -453,10 +453,11 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
-            prev_layers.append(x.detach())
             for k in range(len(prev_layers)):
-                cosine_similarity = F.cosine_similarity(x, prev_layers[k])
-                cosine_similairites.append(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}")
+                cosine_similarity = F.cosine_similarity(x.detach(), prev_layers[k])
+                print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}")
+            prev_layers.append(x.detach())
+        prev_layers = []
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -687,8 +688,6 @@ for step in range(train_steps + 1):
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
     }
-    print(cosine_similairites)
-    cosine_similairites = []
     # set optimization hyperparameters
     for opt in optimizers:
         for group in opt.param_groups:
