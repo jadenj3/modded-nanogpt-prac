@@ -327,7 +327,7 @@ class Block(nn.Module):
         self.mlp = MLP(dim)
         #self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
-        self.b_t = nn.Parameter(torch.ones(2))
+        self.b_t = nn.Parameter(torch.ones(2, dtype=torch.bfloat16))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         attn_output = 0
