@@ -370,6 +370,7 @@ class GPT(nn.Module):
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
         self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        self.relu = nn.ReLU()
 
         # Update Kaiming initialization
         #fan_in = model_dim  # Each layer processes inputs with hidden_size features
@@ -442,7 +443,7 @@ class GPT(nn.Module):
 
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            x = self.residual_weights[i]*x  # Get weights for layer i
+            x = self.relu(self.residual_weights[i]*x)  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''
         for i in range(len(self.blocks)):
