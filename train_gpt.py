@@ -329,7 +329,7 @@ class Block(nn.Module):
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
         self.b_t = nn.Parameter(torch.ones(2, dtype=torch.bfloat16))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
+    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         attn_output = 0
         if self.attn is not None:
             z = self.attn(x, ve, block_mask)
