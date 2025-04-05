@@ -325,23 +325,24 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        #self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
+        self.b_t = nn.Parameter(torch.ones(2))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
-        x = self.lambdas[0] * x + self.lambdas[1] * x0
-        if not self.training:
-            self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
+        attn_output = 0
         if self.attn is not None:
             z = self.attn(x, ve, block_mask)
-            if not self.training:
-                self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
+        x = x + attn_output
         z = self.mlp(norm(x))
-        if not self.training:
-            self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-        x = x + z
-        return x
+        final_output = x + z
+        # Return both the final output for the next layer's G_t+1 calculation,
+        # AND the result *before* the final skip connection if that's f_t(g_t(x)).
+        # Let's assume f_t = attn_output + z_mlp for simplicity here.
+        residual_function_output = attn_output + z
+
+        return final_output, residual_function_output
 
 # -----------------------------------------------------------------------------
 # The main model
@@ -369,12 +370,12 @@ class GPT(nn.Module):
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.bfloat16))
+       # self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.bfloat16))
 
         # Update Kaiming initialization
-        fan_in = model_dim  # Each layer processes inputs with hidden_size features
-        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
-        self.model_dim = model_dim
+        #fan_in = model_dim  # Each layer processes inputs with hidden_size features
+        #init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        #self.model_dim = model_dim
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -439,11 +440,17 @@ class GPT(nn.Module):
             10: 4,
             11: 2,
         }
-
+        previous_block_output = x0  # Initialize with x0
         for i in range(len(self.blocks)):
+            G_t = torch.stack([x0, previous_block_output], dim=-1)
+            b_t = self.blocks[i].b_t  # Shape (2,)
+            grn_input = torch.matmul(G_t, b_t.unsqueeze(-1)).squeeze(-1)
+            final_output, _ = self.blocks[i](grn_input, ve[i], block_masks[i])
             # Inside the loop for layer i:
-            x = x + self.residual_weights[i]*x  # Get weights for layer i
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            # Update for next iteration
+            previous_block_output = final_output
+            # Keep the final output as 'x' for consistency if needed after the loop
+            x = final_output
         '''
         for i in range(len(self.blocks)):
             if i in skip_map:
