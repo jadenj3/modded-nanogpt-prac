@@ -440,18 +440,18 @@ class GPT(nn.Module):
             10: 4,
             11: 2,
         }
-
+        '''
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             x = self.residual_weights[i]*x  # Get weights for layer i
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
-        '''
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
+
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)'''
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -502,7 +502,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 375 # number of iterations to run
+    num_iterations = 405 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
