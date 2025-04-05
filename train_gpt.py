@@ -369,12 +369,12 @@ class GPT(nn.Module):
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
 
         # Update Kaiming initialization
-        fan_in = model_dim  # Each layer processes inputs with hidden_size features
-        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
-        self.model_dim = model_dim
+        #fan_in = model_dim  # Each layer processes inputs with hidden_size features
+        #init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        #self.model_dim = model_dim
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
