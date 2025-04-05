@@ -456,7 +456,7 @@ class GPT(nn.Module):
             prev_layers.append(x)
             for k in range(len(prev_layers)):
                 cosine_similarity = F.cosine_similarity(x, prev_layers[k])
-                print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}", console=True)
+                #print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}", console=True)
 
         x = norm(x)
         logits = self.lm_head(x)
