@@ -375,7 +375,6 @@ class GPT(nn.Module):
         fan_in = model_dim  # Each layer processes inputs with hidden_size features
         init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
         self.model_dim = model_dim
-        self.relu = nn.ReLU()
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -443,7 +442,7 @@ class GPT(nn.Module):
 
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            x =  self.relu(self.residual_weights[i]*x) # Get weights for layer i
+            x = x + self.residual_weights[i]*x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''
         for i in range(len(self.blocks)):
@@ -660,7 +659,7 @@ for step in range(train_steps + 1):
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
         if hasattr(model, "skip_weights"):
             print0(s=f"{model.skip_weights}")
-        #print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
+        print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
         print0(s="\n".join([f"{i} {block.record.sqrt().tolist()}" for i, block in enumerate(model.blocks)]))
         model.train()
         # start the clock again
