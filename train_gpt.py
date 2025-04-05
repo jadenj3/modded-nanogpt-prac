@@ -441,10 +441,11 @@ class GPT(nn.Module):
         }
 
         # Before the loop:
-        prev_x = x0  # Start with the initial normalized embeddings
+        prev_x = None  # Start with the initial normalized embeddings
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            x = x + self.residual_weights[i][0]*prev_x  # Get weights for layer i
+            if prev_x:
+                x = x + self.residual_weights[i][0]*prev_x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_x = x
         '''
