@@ -446,13 +446,17 @@ class GPT(nn.Module):
             # Inside the loop for layer i:
             x = self.residual_weights[i]*x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
-
+        prev_layers = []
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
+            prev_layers.append(x)
+            for k in range(len(prev_layers)):
+                cosine_similarity = F.cosine_similarity(x, prev_layers[k])
+                print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}", console=True)
 
         x = norm(x)
         logits = self.lm_head(x)
