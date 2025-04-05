@@ -325,34 +325,23 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        #self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
-        self.b_t = nn.Parameter(torch.ones(2, dtype=torch.bfloat16))
 
-    def forward(self, grn_input: Tensor, ve: Tensor | None, block_mask: BlockMask):
-        attn_output = 0
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
+        x = self.lambdas[0] * x + self.lambdas[1] * x0
+        if not self.training:
+            self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            # Assuming norm happens before attention based on your original code's MLP path
-            z_attn = self.attn(norm(grn_input), ve, block_mask)
+            z = self.attn(x, ve, block_mask)
             if not self.training:
-                self.record[1].lerp_(torch.square(z_attn).mean(dtype=torch.float32), 0.5)
-            attn_output = z_attn
-
-        # First skip connection (residual connection around attention)
-        x_after_attn = grn_input + attn_output
-
-        # Apply MLP
-        z_mlp = self.mlp(norm(x_after_attn))
-
-        # Second skip connection (residual connection around MLP)
-        final_output = x_after_attn + z_mlp
-
-        # Return both the final output for the next layer's G_t+1 calculation,
-        # AND the result *before* the final skip connection if that's f_t(g_t(x)).
-        # Let's assume f_t = attn_output + z_mlp for simplicity here.
-        residual_function_output = attn_output + z_mlp
-
-        return final_output, residual_function_output
+                self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
+            x = x + z
+        z = self.mlp(norm(x))
+        if not self.training:
+            self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
+        x = x + z
+        return x
 
 # -----------------------------------------------------------------------------
 # The main model
@@ -380,12 +369,12 @@ class GPT(nn.Module):
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-       # self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.empty(num_layers, 1, model_dim, dtype=torch.bfloat16))
 
         # Update Kaiming initialization
-        #fan_in = model_dim  # Each layer processes inputs with hidden_size features
-        #init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
-        #self.model_dim = model_dim
+        fan_in = model_dim  # Each layer processes inputs with hidden_size features
+        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        self.model_dim = model_dim
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -450,17 +439,11 @@ class GPT(nn.Module):
             10: 4,
             11: 2,
         }
-        previous_block_output = x0  # Initialize with x0
+
         for i in range(len(self.blocks)):
-            G_t = torch.stack([x0, previous_block_output], dim=-1)
-            b_t = self.blocks[i].b_t  # Shape (2,)
-            #grn_input = torch.matmul(G_t, b_t.unsqueeze(-1)).squeeze(-1)
-            final_output, _ = self.blocks[i](x, ve[i], block_masks[i])
             # Inside the loop for layer i:
-            # Update for next iteration
-            previous_block_output = final_output
-            # Keep the final output as 'x' for consistency if needed after the loop
-            x = final_output
+            x = x + self.residual_weights[i]*x  # Get weights for layer i
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''
         for i in range(len(self.blocks)):
             if i in skip_map:
@@ -676,7 +659,7 @@ for step in range(train_steps + 1):
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
         if hasattr(model, "skip_weights"):
             print0(s=f"{model.skip_weights}")
-        #print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
+        print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
         print0(s="\n".join([f"{i} {block.record.sqrt().tolist()}" for i, block in enumerate(model.blocks)]))
         model.train()
         # start the clock again
