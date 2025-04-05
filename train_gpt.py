@@ -375,6 +375,7 @@ class GPT(nn.Module):
         fan_in = model_dim  # Each layer processes inputs with hidden_size features
         init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
         self.model_dim = model_dim
+        self.relu = nn.ReLU()
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -442,7 +443,7 @@ class GPT(nn.Module):
 
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            x =  self.residual_weights[i]*x # Get weights for layer i
+            x =  self.relu(self.residual_weights[i]*x) # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''
         for i in range(len(self.blocks)):
