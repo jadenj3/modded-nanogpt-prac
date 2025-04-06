@@ -459,15 +459,15 @@ class GPT(nn.Module):
                     prev_layers.append(x.detach().clone())
                     n = len(self.blocks)
 
-                    if i == (n - 1):
+                    if i == (len(self.blocks) - 1):
                         last_layer_output = prev_layers[-1]
                         for j in range(len(prev_layers)):  # Compare last layer to all recorded layers
                             similarity_tensor = F.cosine_similarity(last_layer_output, prev_layers[j], dim=0)
 
                             if similarity_tensor.numel() > 0:
-                                self.recored[j] = similarity_tensor.mean().item()
+                                self.record[j] = similarity_tensor.mean().item()
                             else:
-                                self.recored[j] = 0.0  # Or float('nan')
+                                self.record[j] = 0.0  # Or float('nan')
 
         x = norm(x)
         logits = self.lm_head(x)
