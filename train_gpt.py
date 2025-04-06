@@ -657,6 +657,11 @@ for step in range(train_steps + 1):
         val_steps = args.val_tokens // val_batch_size
         val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
         val_loss = 0
+        with torch.no_grad():
+            for _ in range(val_steps):
+                inputs, targets = next(val_loader)
+                loss, residuals = model(inputs, targets, get_window_size_blocks(step))
+                val_loss += loss.item()
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
