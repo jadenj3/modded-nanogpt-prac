@@ -458,7 +458,7 @@ class GPT(nn.Module):
                     x = self.residual_weights[i][j]*prev_layers[j]
                 else:
                     x = x + self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
-            x, residuals = self.blocks[i](x, ve[i], x0, block_masks[i])
+            x, residuals = self.blocks[i](x, ve[i], x0, block_masks[i], residuals)
             prev_layers.append(x)
             if len(prev_layers) > 1:
                 prev_layers.popleft()
