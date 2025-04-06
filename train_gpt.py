@@ -300,7 +300,6 @@ class CausalSelfAttention(nn.Module):
             q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads,
                                                                                  self.head_dim).chunk(3, dim=-2)
 
-
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
