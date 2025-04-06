@@ -433,7 +433,7 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
-        # U-net design by @brendanh0gan
+        ## U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
         n = self.num_layers//2
