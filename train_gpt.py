@@ -301,11 +301,10 @@ class CausalSelfAttention(nn.Module):
             q = q + q0*self.res_lambdas[0]
             k = k + k0*self.res_lambdas[1]
             v = v + v0*self.res_lambdas[2]
-        else:
-            if ve is not None:
-                v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
-            else: # skip mid-layers token value embeddings by @YouJiacheng
-                v = self.lambdas[0] * v
+        if ve is not None:
+            v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
+        else: # skip mid-layers token value embeddings by @YouJiacheng
+            v = self.lambdas[0] * v
         q, k = norm(q), norm(k)  # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
