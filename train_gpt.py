@@ -330,7 +330,6 @@ class Block(nn.Module):
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
-        x = norm(x)
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
@@ -448,7 +447,7 @@ class GPT(nn.Module):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
                 x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            x = self.blocks[i](norm(x), ve[i], x0, block_masks[i])
             prev_layers.append(x)
         '''
         for i in range(len(self.blocks)):
