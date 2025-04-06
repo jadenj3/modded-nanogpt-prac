@@ -435,7 +435,7 @@ class GPT(nn.Module):
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
-        n = len(self.skip_weights)
+        #n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
