@@ -301,7 +301,7 @@ class CausalSelfAttention(nn.Module):
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
-        return y
+        return y, (q,k,v)
 
 class MLP(nn.Module):
     def __init__(self, dim: int):
@@ -329,11 +329,12 @@ class Block(nn.Module):
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
+        residuals = (x, x, x)
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            z = self.attn(x, ve, block_mask)
+            z, residuals = self.attn(x, ve, block_mask)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
@@ -341,7 +342,7 @@ class Block(nn.Module):
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
         x = x + z
-        return x
+        return x, residuals
 
 # -----------------------------------------------------------------------------
 # The main model
@@ -451,7 +452,7 @@ class GPT(nn.Module):
                     x = self.residual_weights[i][j]*prev_layers[j]
                 else:
                     x = x + self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            x, residuals = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_layers.append(x)
             if len(prev_layers) > 1:
                 prev_layers.popleft()
