@@ -453,12 +453,26 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
-            prev_layers.append(x.detach())
-            for k in range(len(prev_layers)):
-                with torch.no_grad():
-                    cosine_similarity = F.cosine_similarity(x.flatten(), prev_layers[k].flatten(), dim=0).item()
+                # Move current tensor to CPU immediately after use
+            current_layer_cpu = x.detach().flatten().cpu()
+
+            # Compute cosine similarity with all previous layers (on CPU)
+            with torch.no_grad():
+                for k, prev_layer_cpu in enumerate(prev_layers):
+                    cosine_similarity = F.cosine_similarity(
+                        current_layer_cpu,
+                        prev_layer_cpu,
+                        dim=0
+                    ).item()
                     print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}",
                            console=True)
+
+            # Append only CPU tensors
+            prev_layers.append(current_layer_cpu)
+
+            # Optional: Limit memory by removing older layers (e.g., oldest layers if too many)
+            if len(prev_layers) > len(self.blocks):  # safety precaution; adjust as needed
+                prev_layers.pop(0)
 
         x = norm(x)
         logits = self.lm_head(x)
