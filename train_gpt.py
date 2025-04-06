@@ -366,6 +366,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        self.record = nn.Buffer(torch.zeros(num_layers))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
@@ -446,7 +447,6 @@ class GPT(nn.Module):
             # Inside the loop for layer i:
             x = self.residual_weights[i]*x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
-        prev_layers = []
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
@@ -455,25 +455,7 @@ class GPT(nn.Module):
                 skip_connections.append(x)
                 # Move current tensor to CPU immediately after use
             if not self.training:
-                current_layer_cpu = x.detach().flatten().cpu()
-
-                # Compute cosine similarity with all previous layers (on CPU)
-                with torch.no_grad():
-                    for k, prev_layer_cpu in enumerate(prev_layers):
-                        cosine_similarity = F.cosine_similarity(
-                            current_layer_cpu,
-                            prev_layer_cpu,
-                            dim=0
-                        ).item()
-                        print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}",
-                               console=True)
-
-                # Append only CPU tensors
-                prev_layers.append(current_layer_cpu)
-
-            # Optional: Limit memory by removing older layers (e.g., oldest layers if too many)
-            if len(prev_layers) > len(self.blocks):  # safety precaution; adjust as needed
-                prev_layers.pop(0)
+                self.record[i] = x.detach().cpu().flatten()
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -676,6 +658,17 @@ for step in range(train_steps + 1):
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
                 val_loss += model(inputs, targets, get_window_size_blocks(step))
+            similarities = []
+            for i in range(1, len(model.blocks)):
+                cos_sim = F.cosine_similarity(
+                    model.record[i - 1],
+                    model.record[i],
+                    dim=0
+                ).item()
+                similarities.append(cos_sim)
+
+            print0("Cosine similarities between consecutive layers:\n" +
+                   "\n".join([f"{i - 1} ↔ {i}: {s:.4f}" for i, s in enumerate(similarities, start=1)]))
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
