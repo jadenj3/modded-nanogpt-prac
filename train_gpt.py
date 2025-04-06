@@ -447,6 +447,7 @@ class GPT(nn.Module):
             # Inside the loop for layer i:
             x = self.residual_weights[i]*x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
+        prev_layers = []
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
@@ -455,13 +456,15 @@ class GPT(nn.Module):
                 skip_connections.append(x)
                 # Move current tensor to CPU immediately after use
             if not self.training:
-                self.record[i] = x.detach().cpu().flatten()
+                prev_layers.append(x.detach().cpu().flatten())
 
         x = norm(x)
         logits = self.lm_head(x)
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits.float() / 7.5)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
+        if not self.training:
+            return loss, prev_layers
         return loss
 
 # -----------------------------------------------------------------------------
@@ -654,21 +657,6 @@ for step in range(train_steps + 1):
         val_steps = args.val_tokens // val_batch_size
         val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
         val_loss = 0
-        with torch.no_grad():
-            for _ in range(val_steps):
-                inputs, targets = next(val_loader)
-                val_loss += model(inputs, targets, get_window_size_blocks(step))
-            similarities = []
-            for i in range(1, len(model.blocks)):
-                cos_sim = F.cosine_similarity(
-                    model.record[i - 1],
-                    model.record[i],
-                    dim=0
-                ).item()
-                similarities.append(cos_sim)
-
-            print0("Cosine similarities between consecutive layers:\n" +
-                   "\n".join([f"{i - 1} ↔ {i}: {s:.4f}" for i, s in enumerate(similarities, start=1)]))
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
