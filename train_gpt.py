@@ -346,7 +346,7 @@ class Block(nn.Module):
 # -----------------------------------------------------------------------------
 # The main model
 from collections import deque
-cosine_similairites = []
+
 
 def next_multiple_of_n(v: float | int, *, n: int):
     return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
@@ -365,9 +365,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.num_layers = num_layers
         self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        self.record = nn.Buffer(torch.zeros(num_layers))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
@@ -434,10 +432,10 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
-        ## U-net design by @brendanh0gan
+        # U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
-        n = self.num_layers//2
+        n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
@@ -448,32 +446,16 @@ class GPT(nn.Module):
             # Inside the loop for layer i:
             x = self.residual_weights[i]*x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
-        prev_layers = []
+
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
-            if not self.training:
-                with torch.no_grad():
-                    prev_layers.append(x.detach().clone())
-                    n = len(self.blocks)
-
-                    if i == (len(self.blocks) - 1):
-                        last_layer_output = prev_layers[-1]
-                        for j in range(len(prev_layers)):  # Compare last layer to all recorded layers
-                            similarity_tensor = F.cosine_similarity(last_layer_output, prev_layers[j], dim=0)
-
-                            if similarity_tensor.numel() > 0:
-                                self.record[j] = similarity_tensor.mean().item()
-                            else:
-                                self.record[j] = 0.0  # Or float('nan')
-                        print0(self.record, console=True)
 
         x = norm(x)
         logits = self.lm_head(x)
-        ##
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits.float() / 7.5)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
@@ -518,8 +500,8 @@ class Hyperparameters:
     train_files = "data/fineweb10B/fineweb_train_*.bin" # input .bin to train on
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
-    train_seq_len = 32*1024 # FlexAttention sequence length
-    val_seq_len = 4*32*1024 # FlexAttention sequence length for validation
+    train_seq_len = 64*1024 # FlexAttention sequence length
+    val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
     num_iterations = 405 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
