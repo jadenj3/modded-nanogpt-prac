@@ -365,8 +365,8 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        ##self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2, 1))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
@@ -442,6 +442,7 @@ class GPT(nn.Module):
             11: 2,
         }
         prev_layers = []
+        '''
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             if prev_layers:
@@ -449,20 +450,20 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if prev_layers:
                 prev_layers.pop()
-            prev_layers.append(x)
+            prev_layers.append(x)'''
         '''for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
                 x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_layers.append(x)'''
-        '''
+
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)'''
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
