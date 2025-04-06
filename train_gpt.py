@@ -286,11 +286,17 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
+        self.res_lambdas = nn.Parameter(torch.tensor([1.0,1.0,1.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
+    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, prev_res):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
+        q0, k0, v0 = prev_res
+        q = q + q0*self.res_lambdas[0]
+        k = k + k0*self.res_lambdas[1]
+        v = v + v0*self.res_lambdas[2]
+
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
@@ -328,13 +334,13 @@ class Block(nn.Module):
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_res):
         residuals = (x, x, x)
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            z, residuals = self.attn(x, ve, block_mask)
+            z, residuals = self.attn(x, ve, block_mask, prev_res)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
