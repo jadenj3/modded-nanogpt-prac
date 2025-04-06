@@ -367,12 +367,12 @@ class GPT(nn.Module):
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
-        #self.residual_weights = nn.Parameter(torch.full((num_layers, num_layers), 1))
+        self.residual_weights = nn.Parameter(torch.full((num_layers, num_layers), 1))
 
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers, model_dim, dtype=torch.bfloat16))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
         #self.relu = nn.ReLU()
 
         # Update Kaiming initialization
@@ -447,7 +447,10 @@ class GPT(nn.Module):
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
-                x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
+                if j == 0:
+                    x = self.residual_weights[i][j]*prev_layers[j]
+                else:
+                    x = + self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_layers.append(x)
         '''
