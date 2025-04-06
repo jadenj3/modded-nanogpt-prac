@@ -442,13 +442,13 @@ class GPT(nn.Module):
             11: 2,
         }
         prev_layers = []
-
+        '''
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
                 x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            prev_layers.append(x)
+            prev_layers.append(x)'''
 
         for i in range(len(self.blocks)):
             if i in skip_map:
