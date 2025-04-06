@@ -456,8 +456,8 @@ class GPT(nn.Module):
             prev_layers.append(x.detach())
             for k in range(len(prev_layers)):
                 with torch.no_grad():
-                    cosine_similarity = F.cosine_similarity(x.detach(), prev_layers[k].detach()).cpu()
-                    print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity.item()}",
+                    cosine_similarity = F.cosine_similarity(x.flatten(), prev_layers[k].flatten(), dim=0).item()
+                    print0(f"cosine similarity between layer {i} and prev layer {k} is {cosine_similarity}",
                            console=True)
 
         x = norm(x)
