@@ -365,12 +365,12 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers))
+        #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
         #self.relu = nn.ReLU()
 
         # Update Kaiming initialization
@@ -435,7 +435,7 @@ class GPT(nn.Module):
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
-        n = len(self.skip_weights)
+        #n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
