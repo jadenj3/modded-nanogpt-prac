@@ -458,6 +458,9 @@ class GPT(nn.Module):
             if not self.training:
                 with torch.no_grad():
                     prev_layers.append(x)
+                    if i == (n - 1):
+                        for i in range(len(prev_layers)):
+                            self.recored[i] = F.cosine_similarity(prev_layers[-1], prev_layers[i], dim=0).item()
 
         x = norm(x)
         logits = self.lm_head(x)
