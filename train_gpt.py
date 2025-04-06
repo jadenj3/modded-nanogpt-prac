@@ -205,9 +205,7 @@ class Muon(torch.optim.Optimizer):
                 if base_i + self.rank < len(params):
                     p = params[base_i + self.rank]
                     g = p.grad
-                    if g is None:
-                        # Parameter was not used in forward pass for this iteration, skip its update
-                        continue
+                    assert g is not None
                     state = self.state[p]
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
@@ -281,7 +279,6 @@ class CausalSelfAttention(nn.Module):
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
         self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
-        #self.qkv_w = nn.Parameter(torch.ones(3, hdim, dim))
         self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
         self.rotary = Rotary(head_dim, max_seq_len)
         self.c_proj = CastedLinear(hdim, dim)
@@ -289,32 +286,22 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        self.res_lambdas = nn.Parameter(torch.tensor([1.0,1.0,1.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, prev_res):
+    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
-        q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads,
-                                                                             self.head_dim).chunk(3, dim=-2)
+        q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
+        q, k = norm(q), norm(k) # QK norm @Grad62304977
+        q, k = self.rotary(q), self.rotary(k)
+        v = norm(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = self.lambdas[0] * v
-        q, k = norm(q), norm(k)  # QK norm @Grad62304977
-        q, k = self.rotary(q), self.rotary(k)
-        v = norm(v)
-        '''if prev_res is not None:
-            q0, k0, v0 = prev_res
-            q = q + q0*self.res_lambdas[0]
-            k = k + k0*self.res_lambdas[1]
-            v = v + v0*self.res_lambdas[2]
-            q, k = norm(q), norm(k)  # QK norm @Grad62304977
-            q, k = self.rotary(q), self.rotary(k)
-            v = norm(v)'''
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
-        return y, (q,k,v)
+        return y
 
 class MLP(nn.Module):
     def __init__(self, dim: int):
@@ -341,13 +328,12 @@ class Block(nn.Module):
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_res):
-        residuals = None
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            z, residuals = self.attn(x, ve, block_mask, prev_res)
+            z = self.attn(x, ve, block_mask)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
@@ -355,7 +341,7 @@ class Block(nn.Module):
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
         x = x + z
-        return x, residuals
+        return x
 
 # -----------------------------------------------------------------------------
 # The main model
@@ -380,13 +366,11 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1))
-        #self.residual_weights = nn.Parameter(torch.full((num_layers, num_layers), 1.0, dtype=torch.bfloat16))
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers, model_dim, dtype=torch.bfloat16))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
         #self.relu = nn.ReLU()
 
         # Update Kaiming initialization
@@ -457,19 +441,11 @@ class GPT(nn.Module):
             10: 4,
             11: 2,
         }
-        prev_layers = deque()
-        residuals = None
+
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            for j in range(len(prev_layers)):
-                if j == 0:
-                    x = self.residual_weights[i][j]*prev_layers[j]
-                else:
-                    x = x + self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
-            x, residuals = self.blocks[i](x, ve[i], x0, block_masks[i], residuals)
-            prev_layers.append(x)
-            if len(prev_layers) > 1:
-                prev_layers.popleft()
+            x = self.residual_weights[i]*x  # Get weights for layer i
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''
         for i in range(len(self.blocks)):
             if i in skip_map:
@@ -640,8 +616,7 @@ for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
-        if param.grad is not None:
-            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -705,7 +680,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2works = {
-        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params if p.grad is not None]
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
