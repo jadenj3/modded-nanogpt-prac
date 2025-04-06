@@ -367,7 +367,7 @@ class GPT(nn.Module):
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
-        self.residual_weights = nn.Parameter(torch.full((num_layers, num_layers), 1))
+        self.residual_weights = nn.Parameter(torch.full((num_layers, num_layers), 1.0, dtype=torch.bfloat16))
 
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
