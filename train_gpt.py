@@ -417,6 +417,7 @@ class GPT(nn.Module):
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
+
         skip_connections = []
         n = len(self.skip_weights)
         for i in range(len(self.blocks)):
@@ -476,7 +477,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6710 # number of iterations to run
+    num_iterations = 2500 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
