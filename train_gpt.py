@@ -456,7 +456,8 @@ class GPT(nn.Module):
                 skip_connections.append(x)
                 # Move current tensor to CPU immediately after use
             if not self.training:
-                prev_layers.append(x.detach().cpu().flatten())
+                with torch.no_grad():
+                    prev_layers.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
