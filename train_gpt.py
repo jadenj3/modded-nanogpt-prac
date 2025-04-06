@@ -368,11 +368,11 @@ class GPT(nn.Module):
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
         #self.residual_weights = nn.Parameter(torch.full((num_layers, num_layers), 1.0, dtype=torch.bfloat16))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers, dtype=torch.bfloat16))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers, dtype=torch.bfloat16))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers, model_dim, dtype=torch.bfloat16))
         #self.relu = nn.ReLU()
 
         # Update Kaiming initialization
