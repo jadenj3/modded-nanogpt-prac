@@ -292,10 +292,11 @@ class CausalSelfAttention(nn.Module):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
-        q0, k0, v0 = prev_res
-        q = q + q0*self.res_lambdas[0]
-        k = k + k0*self.res_lambdas[1]
-        v = v + v0*self.res_lambdas[2]
+        if prev_res is not None:
+            q0, k0, v0 = prev_res
+            q = q + q0*self.res_lambdas[0]
+            k = k + k0*self.res_lambdas[1]
+            v = v + v0*self.res_lambdas[2]
 
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
@@ -335,7 +336,7 @@ class Block(nn.Module):
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_res):
-        residuals = (x, x, x)
+        residuals = None
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
@@ -451,6 +452,7 @@ class GPT(nn.Module):
             11: 2,
         }
         prev_layers = deque()
+        residuals = None
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
