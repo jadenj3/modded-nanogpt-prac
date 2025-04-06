@@ -660,8 +660,7 @@ for step in range(train_steps + 1):
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
-                loss, residuals = model(inputs, targets, get_window_size_blocks(step))
-                val_loss += loss.item()
+                val_loss += model(inputs, targets, get_window_size_blocks(step))
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
