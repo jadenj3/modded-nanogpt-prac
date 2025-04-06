@@ -34,7 +34,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(42)
+seed_everything(5)
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
@@ -365,8 +365,8 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones((num_layers // 2), 1))
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1))
+        #self.skip_weights = nn.Parameter(torch.ones((num_layers // 2), 1))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
