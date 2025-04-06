@@ -444,8 +444,7 @@ class GPT(nn.Module):
         #prev_layers = []
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            if i >= 1:
-                x = self.residual_weights[i] * x # Get weights for layer i
+            x = self.residual_weights[i] * x # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''for i in range(len(self.blocks)):
             # Inside the loop for layer i:
