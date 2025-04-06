@@ -454,13 +454,20 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
-                # Move current tensor to CPU immediately after use
             if not self.training:
                 with torch.no_grad():
-                    prev_layers.append(x)
+                    prev_layers.append(x.detach().clone())
+                    n = len(self.blocks)
+
                     if i == (n - 1):
-                        for j in range(len(prev_layers)):
-                            self.recored[j] = F.cosine_similarity(prev_layers[-1], prev_layers[j], dim=0).item()
+                        last_layer_output = prev_layers[-1]
+                        for j in range(len(prev_layers)):  # Compare last layer to all recorded layers
+                            similarity_tensor = F.cosine_similarity(last_layer_output, prev_layers[j], dim=0)
+
+                            if similarity_tensor.numel() > 0:
+                                self.recored[j] = similarity_tensor.mean().item()
+                            else:
+                                self.recored[j] = 0.0  # Or float('nan')
 
         x = norm(x)
         logits = self.lm_head(x)
