@@ -365,7 +365,8 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        self.num_layers = num_layers
+        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
         self.record = nn.Buffer(torch.zeros(num_layers))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
@@ -433,10 +434,10 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
-        # U-net design by @brendanh0gan
+        ## U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
-        n = len(self.skip_weights)
+        n = self.num_layers//2
         skip_map = {
             9: 6,
             10: 4,
@@ -449,8 +450,8 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
         prev_layers = []
         for i in range(len(self.blocks)):
-            #if i in skip_map:
-                #x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
+            if i in skip_map:
+                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
