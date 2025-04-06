@@ -365,6 +365,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
+        self.num_layers = num_layers
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
         #self.record = nn.Buffer(torch.zeros(num_layers))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers))
