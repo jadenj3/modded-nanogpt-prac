@@ -366,7 +366,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         ##self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
@@ -444,7 +444,8 @@ class GPT(nn.Module):
         #prev_layers = []
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            x = self.residual_weights[i] * x # Get weights for layer i
+            if i >= 1:
+                x = self.residual_weights[i] * x # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
         '''for i in range(len(self.blocks)):
             # Inside the loop for layer i:
