@@ -357,7 +357,7 @@ class GPT(nn.Module):
         self.embed = nn.Embedding(vocab_size, model_dim)
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(1)])
+        #self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(1)])
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
@@ -366,11 +366,11 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
         #self.relu = nn.ReLU()
 
         # Update Kaiming initialization
@@ -448,6 +448,8 @@ class GPT(nn.Module):
             for j in range(len(prev_layers)):
                 x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
             x = self.blocks[i](x, ve[0], x0, block_masks[i])
+            if prev_layers:
+                prev_layers.pop()
             prev_layers.append(x)
         '''
         for i in range(len(self.blocks)):
