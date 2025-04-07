@@ -421,10 +421,11 @@ class GPT(nn.Module):
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
-        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+        #ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        ve = [None] * (len(self.blocks) - 3) + [ve[0], ve[0], ve[0]]
-        assert len(ve) == len(self.blocks)
+        #ve = [None] * (len(self.blocks) - 3) + [ve[0], ve[0], ve[0]]
+        #assert len(ve) == len(self.blocks)
+        ve = [None]
 
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
         block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
