@@ -350,7 +350,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -418,10 +418,8 @@ class GPT(nn.Module):
 
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            for j in range(len(prev_layers)):
-                x = self.residual_weights[i][j] * prev_layers[j]  # Get weights for layer i
+            x = self.residual_weights[i][0] * x  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            prev_layers.append(x)
         '''
         for i in range(len(self.blocks)):
             if i in skip_map:
@@ -592,8 +590,7 @@ for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
-        if param.grad is not None:
-            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -657,7 +654,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2works = {
-        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params if p is not None]
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
