@@ -34,7 +34,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(42)
+#seed_everything(42)
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
@@ -365,8 +365,8 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers))
+        ##self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
@@ -435,24 +435,34 @@ class GPT(nn.Module):
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
-        n = len(self.skip_weights)
+        #n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
             11: 2,
         }
-        '''
+        prev_layers = []
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            x = self.residual_weights[i]*x  # Get weights for layer i
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
-
+            if prev_layers:
+                x = self.residual_weights[i] * prev_layers[0]  # Get weights for layer i
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            if prev_layers:
+                prev_layers.pop()
+            prev_layers.append(x)
+        '''for i in range(len(self.blocks)):
+            # Inside the loop for layer i:
+            for j in range(len(prev_layers)):
+                x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            prev_layers.append(x)'''
+        '''
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)
+                skip_connections.append(x)'''
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -572,7 +582,7 @@ adam_param_groups = [dict(params=head_params, lr=0.1/1024**0.5), dict(params=emb
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = torch.optim.Adam(adam_param_groups, betas=(0.8, 0.95), eps=1e-10, fused=True)
-optimizer2 = Muon(hidden_matrix_params, lr=0.02, momentum=0.95, rank=rank, world_size=world_size)
+optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.95, rank=rank, world_size=world_size)
 optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
 def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
     return [p for group in opt.param_groups for p in group["params"]]
