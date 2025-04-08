@@ -365,15 +365,15 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.empty(num_layers // 2))
+        #self.skip_weights = nn.Parameter(torch.empty(num_layers // 2))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        #self.residual_weights = nn.Parameter(torch.empty(num_layers, 2))
+        self.residual_weights = nn.Parameter(torch.empty(num_layers, 2))
 
         # Apply Kaiming uniform initialization
-        #fan_in = 2  # Each row processes at most 2 inputs from the queue
-       # init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        fan_in = 2  # Each row processes at most 2 inputs from the queue
+        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -431,14 +431,14 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
-        skip_connections = []
-        n = len(self.skip_weights)
+        #skip_connections = []
+        #n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
             11: 2,
         }
-        '''
+
         queue = deque(x0)
         for i in range(len(self.blocks)):
             x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
@@ -447,14 +447,14 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if len(queue) == 2:
                 queue.popleft()
-            queue.append(x)'''
-
+            queue.append(x)
+        '''
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)
+                skip_connections.append(x)'''
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -574,7 +574,7 @@ adam_param_groups = [dict(params=head_params, lr=0.1/1024**0.5), dict(params=emb
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = torch.optim.Adam(adam_param_groups, betas=(0.8, 0.95), eps=1e-10, fused=True)
-optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95, rank=rank, world_size=world_size)
+optimizer2 = Muon(hidden_matrix_params, lr=0.02, momentum=0.95, rank=rank, world_size=world_size)
 optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
 def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
     return [p for group in opt.param_groups for p in group["params"]]
