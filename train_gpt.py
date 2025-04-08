@@ -25,7 +25,7 @@ from torch.nn.attention.flex_attention import BlockMask, flex_attention
 import random
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
-'''
+
 def seed_everything(seed):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -34,7 +34,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(5)'''
+seed_everything(42)
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
@@ -357,7 +357,7 @@ class GPT(nn.Module):
         self.embed = nn.Embedding(vocab_size, model_dim)
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        #self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(1)])
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
@@ -365,12 +365,12 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        #self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
         #self.relu = nn.ReLU()
 
         # Update Kaiming initialization
@@ -421,11 +421,10 @@ class GPT(nn.Module):
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
-        #ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        #ve = [None] * (len(self.blocks) - 3) + [ve[0], ve[0], ve[0]]
-        #assert len(ve) == len(self.blocks)
-        ve = [None]
+        ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
+        assert len(ve) == len(self.blocks)
 
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
         block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
@@ -436,29 +435,24 @@ class GPT(nn.Module):
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
-        #n = len(self.skip_weights)
+        n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
             11: 2,
         }
-        prev_layers = []
-
+        '''
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            for j in range(len(prev_layers)):
-                x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
-            x = self.blocks[i](x, ve[0], x0, block_masks[i])
-            if prev_layers:
-                prev_layers.pop()
-            prev_layers.append(x)
-        '''
+            x = self.residual_weights[i]*x  # Get weights for layer i
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
+
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)'''
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -506,7 +500,7 @@ class Hyperparameters:
     train_files = "data/fineweb10B/fineweb_train_*.bin" # input .bin to train on
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
-    train_seq_len = 18*1024 # FlexAttention sequence length
+    train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
     num_iterations = 405 # number of iterations to run
@@ -578,7 +572,7 @@ adam_param_groups = [dict(params=head_params, lr=0.1/1024**0.5), dict(params=emb
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = torch.optim.Adam(adam_param_groups, betas=(0.8, 0.95), eps=1e-10, fused=True)
-optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.95, rank=rank, world_size=world_size)
+optimizer2 = Muon(hidden_matrix_params, lr=0.02, momentum=0.95, rank=rank, world_size=world_size)
 optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
 def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
     return [p for group in opt.param_groups for p in group["params"]]
@@ -622,8 +616,7 @@ for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
-        if param.grad is not None:
-            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -687,7 +680,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2works = {
-        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params if p.grad is not None]
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
