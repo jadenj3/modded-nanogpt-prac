@@ -173,7 +173,7 @@ class Muon(torch.optim.Optimizer):
         nesterov: Whether to use Nesterov-style momentum in the internal SGD. (recommended)
         ns_steps: The number of Newton-Schulz iteration steps to use.
     """
-    def __init__(self, params, lr=0.02, weight_decay=0.001, momentum=0.55, nesterov=True, ns_steps=5, rank=0, world_size=1):
+    def __init__(self, params, lr=0.02, weight_decay=0.01, momentum=0.95, nesterov=True, ns_steps=5, rank=0, world_size=1):
         self.rank = rank
         self.world_size = world_size
         defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
@@ -365,15 +365,18 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        #self.skip_weights = nn.Parameter(torch.empty(num_layers // 2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
-        self.residual_weights = nn.Parameter(torch.empty(num_layers, 2))
+        #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, model_dim, dtype=torch.bfloat16))
+        #self.relu = nn.ReLU()
 
-        # Apply Kaiming uniform initialization
-        fan_in = 2  # Each row processes at most 2 inputs from the queue
-        init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        # Update Kaiming initialization
+        #fan_in = model_dim  # Each layer processes inputs with hidden_size features
+        #init.kaiming_uniform_(self.residual_weights, a=math.sqrt(5))
+        #self.model_dim = model_dim
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -431,30 +434,25 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
-        #skip_connections = []
-        #n = len(self.skip_weights)
+        skip_connections = []
+        n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
             11: 2,
         }
-
-        queue = deque(x0)
-        for i in range(len(self.blocks)):
-            x = torch.zeros(x0.shape, device=x0.device, dtype=x0.dtype)
-            for j in range(len(queue)):
-                x = x + self.residual_weights[i][j]*queue[j]
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            if len(queue) == 2:
-                queue.popleft()
-            queue.append(x)
         '''
+        for i in range(len(self.blocks)):
+            # Inside the loop for layer i:
+            x = self.residual_weights[i]*x  # Get weights for layer i
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])'''
+
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)'''
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -505,7 +503,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 375 # number of iterations to run
+    num_iterations = 405 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
