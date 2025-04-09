@@ -429,8 +429,8 @@ class GPT(nn.Module):
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
         block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
-
-        x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
+        x0 = self.embed(input_seq)
+        x = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
@@ -442,7 +442,7 @@ class GPT(nn.Module):
             11: 2,
         }
 
-        prev_layers = []
+        prev_layers = [x0]
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
