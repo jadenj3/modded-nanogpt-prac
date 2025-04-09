@@ -287,6 +287,7 @@ class CausalSelfAttention(nn.Module):
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
         #self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 1.0]))
+        self.x_lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_values):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -295,6 +296,7 @@ class CausalSelfAttention(nn.Module):
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
+        v = v = self.x_lambdas[0] * v + self.x_lambdas[1] * x.view_as(v)
         #if skip_values is not None:
                 #v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values.view_as(v)
         if ve is not None:
