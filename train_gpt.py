@@ -296,7 +296,7 @@ class CausalSelfAttention(nn.Module):
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
         if skip_values is not None:
-                v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values
+                v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values.view_as(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
