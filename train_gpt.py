@@ -17,7 +17,17 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
+import random
+#torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
+seed_everything(12)
 
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
@@ -349,8 +359,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        #self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -408,25 +417,18 @@ class GPT(nn.Module):
 
         # U-net design by @brendanh0gan
         skip_connections = []
-        #n = len(self.skip_weights)
+        n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
             11: 2,
         }
-        prev_layers = []
-
-        for i in range(len(self.blocks)):
-            # Inside the loop for layer i:
-            x = self.residual_weights[i] * x  # Get weights for layer i
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
-        '''
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)'''
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
@@ -477,7 +479,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 2500 # number of iterations to run
+    num_iterations = 6710 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
