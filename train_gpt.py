@@ -325,11 +325,11 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        #self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
-        #x = self.lambdas[0] * x + self.lambdas[1] * x0
+        x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
@@ -436,7 +436,7 @@ class GPT(nn.Module):
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
         skip_connections = []
-        #n = len(self.skip_weights)
+        n = len(self.skip_weights)
         skip_map = {
             9: 6,
             10: 4,
@@ -444,6 +444,7 @@ class GPT(nn.Module):
         }
 
         prev_layers = []
+        '''
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             if prev_layers:
@@ -451,20 +452,20 @@ class GPT(nn.Module):
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if prev_layers:
                 prev_layers.pop()
-            prev_layers.append(x)
+            prev_layers.append(x)'''
         '''for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
                 x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_layers.append(x)'''
-        '''
+
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
-                skip_connections.append(x)'''
+                skip_connections.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
