@@ -325,11 +325,11 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        #self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
-        x = self.lambdas[0] * x + self.lambdas[1] * x0
+        #x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
@@ -366,7 +366,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, 2, dtype=torch.bfloat16))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
@@ -446,7 +446,7 @@ class GPT(nn.Module):
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             if prev_layers:
-                x = self.residual_weights[i]*prev_layers[0] # Get weights for layer i
+                x = self.residual_weights[i][0]*prev_layers[0] + self.residual_weights[i][1]*x0  # Get weights for layer i
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if prev_layers:
                 prev_layers.pop()
