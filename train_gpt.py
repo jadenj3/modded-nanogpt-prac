@@ -299,7 +299,7 @@ class CausalSelfAttention(nn.Module):
         #v = v = self.x_lambdas[0] * v + self.x_lambdas[1] * x.view_as(v)
         if skip_values is not None:
                 v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values.view_as(v)
-                v = self.x_lamdas[0] * v + self.x_lamdas[1] * x0.view_as(v)
+                v = self.x_lambdas[0] * v + self.x_lambdas[1] * x0.view_as(v)
         #v = self.x_lambdas[0] * v + self.x_lambdas[1] * x0.view_as(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
