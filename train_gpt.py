@@ -173,7 +173,7 @@ class Muon(torch.optim.Optimizer):
         nesterov: Whether to use Nesterov-style momentum in the internal SGD. (recommended)
         ns_steps: The number of Newton-Schulz iteration steps to use.
     """
-    def __init__(self, params, lr=0.02, weight_decay=0.001, momentum=0.95, nesterov=True, ns_steps=5, rank=0, world_size=1):
+    def __init__(self, params, lr=0.02, weight_decay=0.01, momentum=0.95, nesterov=True, ns_steps=5, rank=0, world_size=1):
         self.rank = rank
         self.world_size = world_size
         defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
@@ -325,11 +325,11 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        #self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
-        #x = self.lambdas[0] * x + self.lambdas[1] * x0
+        x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
@@ -357,7 +357,7 @@ class GPT(nn.Module):
         self.embed = nn.Embedding(vocab_size, model_dim)
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        #self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
@@ -366,7 +366,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         #self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
-        self.residual_weights = nn.Parameter(torch.ones(num_layers, num_layers, dtype=torch.bfloat16))
+        self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, dtype=torch.bfloat16))
         #fan_in = num_layers // 2
         #std = 1 / math.sqrt(fan_in)  # Standard deviation
         #nn.init.normal_(self.skip_weights, mean=0.0, std=std)
@@ -421,16 +421,16 @@ class GPT(nn.Module):
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
-        #ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        #ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
-        #assert len(ve) == len(self.blocks)
+        ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
+        assert len(ve) == len(self.blocks)
 
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
         block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
-        x0 = norm(self.embed(input_seq)[None])
-        x = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
+
+        x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
         #prev_connections = [x0]
@@ -442,19 +442,16 @@ class GPT(nn.Module):
             11: 2,
         }
 
-        prev_layers = [x0]
+        prev_layers = []
         for i in range(len(self.blocks)):
             # Inside the loop for layer i:
-            for j in range(len(prev_layers)):
-                if j == 0:
-                    x = self.residual_weights[i][j] * prev_layers[j]  # Get weights for layer i
-                else:
-                    x = x + self.residual_weights[i][j] * prev_layers[j]
-            x = norm(x)
-            x = self.blocks[i](x, None, x0, block_masks[i])
+            if prev_layers:
+                x = self.residual_weights[i] * prev_layers[0]  # Get weights for layer i
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            if prev_layers:
+                prev_layers.pop()
             prev_layers.append(x)
-        '''
-        for i in range(len(self.blocks)):
+        '''for i in range(len(self.blocks)):
             # Inside the loop for layer i:
             for j in range(len(prev_layers)):
                 x = self.residual_weights[i][j]*prev_layers[j]  # Get weights for layer i
@@ -675,7 +672,7 @@ for step in range(train_steps + 1):
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
         if hasattr(model, "skip_weights"):
             print0(s=f"{model.skip_weights}")
-        #print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
+        print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
         print0(s="\n".join([f"{i} {block.record.sqrt().tolist()}" for i, block in enumerate(model.blocks)]))
         model.train()
         # start the clock again
