@@ -34,7 +34,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(42)
+seed_everything(999)
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
