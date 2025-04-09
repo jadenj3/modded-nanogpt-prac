@@ -450,6 +450,7 @@ class GPT(nn.Module):
                     x = self.residual_weights[i][j] * prev_layers[j]  # Get weights for layer i
                 else:
                     x = x + self.residual_weights[i][j] * prev_layers[j]
+            x = norm(x)
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_layers.append(x)
         '''
@@ -585,7 +586,7 @@ adam_param_groups = [dict(params=head_params, lr=0.1/1024**0.5), dict(params=emb
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = torch.optim.Adam(adam_param_groups, betas=(0.8, 0.95), eps=1e-10, fused=True)
-optimizer2 = Muon(hidden_matrix_params, lr=0.035, momentum=0.80, rank=rank, world_size=world_size)
+optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.80, rank=rank, world_size=world_size)
 optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
 def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
     return [p for group in opt.param_groups for p in group["params"]]
