@@ -662,7 +662,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2works = {
-        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params if p is not None]
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params if p.grad is not None]
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
