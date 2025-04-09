@@ -205,7 +205,9 @@ class Muon(torch.optim.Optimizer):
                 if base_i + self.rank < len(params):
                     p = params[base_i + self.rank]
                     g = p.grad
-                    assert g is not None
+                    if g is None:
+                        continue
+                    #assert g is not None
                     state = self.state[p]
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
