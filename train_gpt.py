@@ -449,7 +449,7 @@ class GPT(nn.Module):
                 if j == 0:
                     x = self.residual_weights[i][j] * prev_layers[j]  # Get weights for layer i
                 else:
-                    x = x + self.residual_weights[i] * prev_layers[j]
+                    x = x + self.residual_weights[i][j] * prev_layers[j]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             prev_layers.append(x)
         '''
