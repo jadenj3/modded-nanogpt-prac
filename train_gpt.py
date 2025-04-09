@@ -283,7 +283,7 @@ class CausalSelfAttention(nn.Module):
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
 
-    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
+    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_value):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
@@ -324,12 +324,12 @@ class Block(nn.Module):
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, skip_value):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            z = self.attn(x, ve, block_mask)
+            z = self.attn(x, ve, block_mask, skip_value)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
@@ -424,9 +424,11 @@ class GPT(nn.Module):
             11: 2,
         }
         for i in range(len(self.blocks)):
+            skip_value = None
             if i in skip_map:
-                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+                skip_value = self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
+                x = x + skip_value
+            x = self.blocks[i](x, ve[i], x0, block_masks[i], skip_value)
             if i < n:
                 skip_connections.append(x)
 
