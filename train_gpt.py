@@ -286,7 +286,7 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        #self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_values, x0):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -297,8 +297,8 @@ class CausalSelfAttention(nn.Module):
         v = norm(v)
         #v = v = self.x_lambdas[0] * v + self.x_lambdas[1] * x.view_as(v)
         #v = self.x_lambdas[0] * v + self.x_lambdas[1] * x0.view_as(v)
-        if skip_values is not None:
-                v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values.view_as(v)
+        #if skip_values is not None:
+                #v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values.view_as(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
