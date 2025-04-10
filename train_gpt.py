@@ -291,8 +291,8 @@ class CausalSelfAttention(nn.Module):
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
-        if skip_values is not None:
-            v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values.view_as(v)
+        if skip_value is not None:
+            v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_value.view_as(v)
         else:
             v = self.skip_lambdas[0] * v
         if ve is not None:
