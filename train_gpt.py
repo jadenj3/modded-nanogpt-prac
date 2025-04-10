@@ -282,7 +282,8 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 0.0])) if layer_idx >= 8 else None
+        if layer_idx >= 8:
+            self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_value):
         B, T = x.size(0), x.size(1) # batch size, sequence length
