@@ -469,6 +469,7 @@ class GPT(nn.Module):
             skip_value = None
             if i in skip_map:
                 skip_value = skip_connections[skip_map[i]]
+                x = x + self.skip_weights[skip_map[i]] * skip_value
             x = self.blocks[i](x, ve[i], x0, block_masks[i], skip_value)
             if i < n:
                 skip_connections.append(x)
