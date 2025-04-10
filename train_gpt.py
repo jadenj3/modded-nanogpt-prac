@@ -282,7 +282,7 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 1.0]))
+        #self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 1.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_value):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -291,10 +291,10 @@ class CausalSelfAttention(nn.Module):
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
-        if skip_value is not None:
-            v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_value.view_as(v)
-        else:
-            v = self.skip_lambdas[0] * v
+        #if skip_value is not None:
+            #v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_value.view_as(v)
+        #else:
+            #v = self.skip_lambdas[0] * v
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
@@ -364,7 +364,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers//2, 1024, dtype=torch.bfloat16))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
