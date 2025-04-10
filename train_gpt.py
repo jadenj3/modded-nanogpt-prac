@@ -265,7 +265,7 @@ class Rotary(nn.Module):
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, head_dim=128):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx, head_dim=128):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
@@ -282,7 +282,7 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 1.0]))
+        self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 0.0])) if layer_idx <= 8 else None
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_value):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -322,7 +322,7 @@ class Block(nn.Module):
     def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
-        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
+        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len, layer_idx) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
