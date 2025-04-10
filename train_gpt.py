@@ -282,7 +282,7 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        #self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 1.0]))
+        self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 1.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_value):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -291,11 +291,10 @@ class CausalSelfAttention(nn.Module):
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
-        '''
         if skip_value is not None:
             v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_value.view_as(v)
         else:
-            v = self.skip_lambdas[0] * v'''
+            v = self.skip_lambdas[0] * v
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
@@ -623,9 +622,13 @@ t0 = time.perf_counter()
 train_steps = args.num_iterations
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
+    validation_set = []
+    for i in range(6625, train_steps, 10):
+        z = 6625 + i
+        validation_set.append(i)
 
     # --------------- VALIDATION SECTION -----------------
-    if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
+    if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0) or step in validation_set:
         # stop the clock
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.perf_counter() - t0)
