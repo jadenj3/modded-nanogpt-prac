@@ -27,7 +27,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(7)
+seed_everything(999)
 
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
