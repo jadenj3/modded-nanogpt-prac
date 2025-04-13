@@ -363,7 +363,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers//2, 1024, dtype=torch.bfloat16))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -428,9 +428,11 @@ class GPT(nn.Module):
             11: 2,
         }
         for i in range(len(self.blocks)):
+            skip_value = None
             if i in skip_map:
-                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
+                skip_value = skip_connections[skip_map[i]]
+                x = x + self.skip_weights[skip_map[i]] * skip_value
+            x = self.blocks[i](x, ve[i], x0, block_masks[i], skip_value)
             if i < n:
                 skip_connections.append(x)
 
