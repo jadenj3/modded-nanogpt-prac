@@ -569,7 +569,7 @@ def get_lr(step: int):
 @lru_cache(1)
 def get_window_size_blocks_helper(window_size: int):
     return torch.tensor(window_size // 128, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-def get_window_size_blocks_emulate_schedule(step: int):
+def get_window_size_blocks(step: int):
     effective_num_iterations_for_schedule = 1200
     n = 128
 
