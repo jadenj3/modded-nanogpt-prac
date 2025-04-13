@@ -345,7 +345,7 @@ class Block(nn.Module):
             z = self.attn(x, ve, block_mask, skip_values, x0)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-            x = x*(1-self.attn_lambda[0]) + z*self.attn_lambda[0]
+            x = x*(self.attn_lambda[0]) + z*(1-self.attn_lambda[0])
         z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
