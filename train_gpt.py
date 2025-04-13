@@ -558,7 +558,9 @@ for opt in optimizers:
 
 # learning rate schedule: stable then decay
 def get_lr(step: int):
-    x = step / args.num_iterations # progress in training
+    num_iters = 1200
+    x = step / num_iters # progress in training
+    x = min(x, 1.0)
     assert 0 <= x < 1
     if x < 1 - args.cooldown_frac:
         return 1.0
