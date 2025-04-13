@@ -304,7 +304,7 @@ class CausalSelfAttention(nn.Module):
         if ve is not None:
             v = self.lambdas[0] * v + (1-self.lambdas[0]) * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
-            v = self.lambdas[0] * v
+            v = v
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
