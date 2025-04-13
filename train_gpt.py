@@ -333,6 +333,7 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0]))
+        self.attn_lambda = nn.Parameter(torch.tensor([1.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, skip_values):
@@ -344,7 +345,7 @@ class Block(nn.Module):
             z = self.attn(x, ve, block_mask, skip_values, x0)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-            x = x + z
+            x = x*(1-self.attn_lambda) + z*self.attn_lambda[0]
         z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
