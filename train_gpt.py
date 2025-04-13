@@ -579,6 +579,12 @@ def get_window_size_blocks(step: int):
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
     window_size = next_multiple_of_n(1728 * x, n=128)
     return get_window_size_blocks_helper(window_size)
+def get_window_size(step: int):
+    x = step / args.num_iterations  # progress in training
+    # Linearly increase the block-wise sliding window size over training 128 -> 1792
+    # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
+    window_size = next_multiple_of_n(1728 * x, n=128)
+    return window_size
 
 model: nn.Module = torch.compile(model, dynamic=False)
 
@@ -657,7 +663,7 @@ for step in range(train_steps + 1):
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
-    print0(f"block size: {get_window_size_blocks(step)}")
+    print0(f"block size: {get_window_size(step)}")
     opt2works = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
@@ -666,7 +672,7 @@ for step in range(train_steps + 1):
     for opt in optimizers:
         for group in opt.param_groups:
             group["lr"] = group["initial_lr"] * get_lr(step)
-            print0(f"step {step} learning rate: {group['lr']}")
+            print0(f"step {step} learning rate: {group['lr']:.5f}")
     for group in optimizer2.param_groups:
         frac = min(step / 300, 1) # momentum warmup for muon
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
