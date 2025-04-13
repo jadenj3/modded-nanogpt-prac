@@ -303,6 +303,8 @@ class CausalSelfAttention(nn.Module):
             #v = self.skip_lambdas[0] * v
         if ve is not None:
             v = self.lambdas[0] * v + (1-self.lambdas[0]) * ve.view_as(v) # @KoszarskyB & @Grad62304977
+        else: # skip mid-layers token value embeddings by @YouJiacheng
+            v = v
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
@@ -470,7 +472,7 @@ class GPT(nn.Module):
             skip_value = None
             if i in skip_map:
                 skip_value = skip_connections[skip_map[i]]
-                x = self.skip_weights[skip_map[i]] * x + (1-self.skip_weights[skip_map[i]]) * skip_value
+                x = x + self.skip_weights[skip_map[i]] * skip_value
             x = self.blocks[i](x, ve[i], x0, block_masks[i], skip_value)
             if i < n:
                 skip_connections.append(x)
