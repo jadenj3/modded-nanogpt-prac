@@ -478,7 +478,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6710 # number of iterations to run
+    num_iterations = 1200 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -570,22 +570,12 @@ def get_lr(step: int):
 def get_window_size_blocks_helper(window_size: int):
     return torch.tensor(window_size // 128, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
 def get_window_size_blocks(step: int):
-    effective_num_iterations_for_schedule = 1200
-    n = 128
-
-    if effective_num_iterations_for_schedule <= 0:
-         x_schedule = 1.0
-    else:
-         x_schedule = step / effective_num_iterations_for_schedule
-         x_schedule = min(x_schedule, 1.0)
-
-    target_size = 1728 * x_schedule
-    window_size = next_multiple_of_n(target_size, n=n)
-
-    # Assuming you call your helper function with the result:
-    # return get_window_size_blocks_helper(window_size)
-    # If not, just return the calculated size:
-    return window_size
+    x = step / args.num_iterations # progress in training
+    assert 0 <= x <= 1
+    # Linearly increase the block-wise sliding window size over training 128 -> 1792
+    # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
+    window_size = next_multiple_of_n(1728 * x, n=128)
+    return get_window_size_blocks_helper(window_size)
 
 model: nn.Module = torch.compile(model, dynamic=False)
 
