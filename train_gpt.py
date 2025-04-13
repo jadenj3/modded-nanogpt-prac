@@ -665,7 +665,7 @@ for step in range(train_steps + 1):
     for opt in optimizers:
         for group in opt.param_groups:
             group["lr"] = group["initial_lr"] * get_lr(step)
-            print0(f"step {step} learning rate: {group['lr']} for group {group}")
+            print0(f"step {step} learning rate: {group['lr']}")
     print0(f"block size: {get_window_size_blocks(step)}")
     for group in optimizer2.param_groups:
         frac = min(step / 300, 1) # momentum warmup for muon
