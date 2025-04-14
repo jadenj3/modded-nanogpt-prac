@@ -600,8 +600,8 @@ def get_lr(step: int):
     # Apply modulo to make step cycle from 1 to 1200
     cycled_step = (step - 1) % num_iterations + 1
 
-    # Calculate x using the cycled step
-    x = cycled_step / num_iterations  # progress in training
+    # Calculate x using the cycled step (subtract 1 to ensure x < 1)
+    x = (cycled_step - 1) / num_iterations  # progress in training
     assert 0 <= x < 1
 
     if x < 1 - args.cooldown_frac:
