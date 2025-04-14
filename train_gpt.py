@@ -558,15 +558,19 @@ for opt in optimizers:
 
 # learning rate schedule: stable then decay
 def get_lr(step: int):
-    #num_iters = 1200
-    x = step / args.num_iterations # progress in training
-   # min_val = step/(step+1)
-   # x = min(x, min_val)
+    x = step / args.num_iterations  # progress in training
     assert 0 <= x < 1
+
     if x < 1 - args.cooldown_frac:
         return 1.0
     else:
-        return (1 - x) / args.cooldown_frac
+        # Calculate progress within cooldown phase
+        cooldown_progress = (x - (1 - args.cooldown_frac)) / args.cooldown_frac
+
+        # Apply cubic pattern to cooldown (fast-slow-fast decrease)
+        cubic_cooldown = 1 - (4 * cooldown_progress ** 3 - 6 * cooldown_progress ** 2 + 3 * cooldown_progress)
+
+        return cubic_cooldown
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
