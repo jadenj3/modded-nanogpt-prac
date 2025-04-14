@@ -554,7 +554,7 @@ def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
 opt2params = {opt: opt_params(opt) for opt in optimizers}
 for opt in optimizers:
     for group in opt.param_groups:
-        group["initial_lr"] = group["lr"]
+        group["initial_lr"] = group["lr"]*0.5
 
 # learning rate schedule: stable then decay
 def get_lr(step: int):
