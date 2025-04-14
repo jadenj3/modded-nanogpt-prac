@@ -578,7 +578,7 @@ def get_window_size_blocks(step: int):
 
     # Add a sine component to the linear progression
     # This creates faster growth at beginning and end, slower in middle
-    factor = 4 * x**3 - 6 * x**2 + 3 * x
+    factor = 4 * x**3 - 6 * x**2 + 3 * x #cool, works!
 
     window_size = next_multiple_of_n(1728 * factor, n=128)
     return get_window_size_blocks_helper(window_size)
