@@ -34,7 +34,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(999)
+seed_everything(7)
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
 def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
@@ -279,32 +279,25 @@ class CausalSelfAttention(nn.Module):
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
         self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
-        self.lambdas = nn.Parameter(torch.tensor([0.5]))
+        self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
         self.rotary = Rotary(head_dim, max_seq_len)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        #self.skip_lambdas = nn.Parameter(torch.tensor([1.0, 1.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, skip_values, x0):
+    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
-        #v = v = self.x_lambdas[0] * v + self.x_lambdas[1] * x.view_as(v)
-        #v = self.x_lambdas[0] * v + self.x_lambdas[1] * x0.view_as(v)
-        #if skip_values is not None:
-            #v = self.skip_lambdas[0] * v + self.skip_lambdas[1] * skip_values.view_as(v)
-        #else:
-            #v = self.skip_lambdas[0] * v
         if ve is not None:
-            v = self.lambdas[0] * v + (1-self.lambdas[0]) * ve.view_as(v) # @KoszarskyB & @Grad62304977
+            v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
-            v = v
+            v = self.lambdas[0] * v
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
@@ -332,20 +325,18 @@ class Block(nn.Module):
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        self.lambdas = nn.Parameter(torch.tensor([1.0]))
-        self.attn_lambda = nn.Parameter(torch.tensor([1.0]))
+        self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, skip_values):
-        x = self.lambdas[0] * x + (1-self.lambdas[0]) * x0
-        #x = self.lambdas[0] * x + self.lambdas[1] * x0
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
+        x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            z = self.attn(x, ve, block_mask, skip_values, x0)
+            z = self.attn(x, ve, block_mask)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-            x = x*(self.attn_lambda[0]) + z*(1-self.attn_lambda[0])
+            x = x + z
         z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
@@ -374,7 +365,7 @@ class GPT(nn.Module):
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
         #self.residual_weights = nn.Parameter(torch.ones(num_layers, 1, dtype=torch.bfloat16))
         #self.x0_weight = nn.Parameter(torch.tensor([0.0], dtype=torch.bfloat16))
         #fan_in = num_layers // 2
@@ -470,11 +461,9 @@ class GPT(nn.Module):
             prev_layers.append(x)'''
 
         for i in range(len(self.blocks)):
-            skip_value = None
             if i in skip_map:
-                skip_value = skip_connections[skip_map[i]]
-                x = x + self.skip_weights[skip_map[i]] * skip_value
-            x = self.blocks[i](x, ve[i], x0, block_masks[i], skip_value)
+                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
             if i < n:
                 skip_connections.append(x)
 
@@ -596,7 +585,7 @@ adam_param_groups = [dict(params=head_params, lr=0.1/1024**0.5), dict(params=emb
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = torch.optim.Adam(adam_param_groups, betas=(0.8, 0.95), eps=1e-10, fused=True)
-optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.95, rank=rank, world_size=world_size)
+optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.80, rank=rank, world_size=world_size)
 optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
 def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
     return [p for group in opt.param_groups for p in group["params"]]
@@ -640,8 +629,7 @@ for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
-        if param.grad is not None:
-            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -705,7 +693,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2works = {
-        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params if p.grad is not None]
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
