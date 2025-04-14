@@ -581,7 +581,8 @@ def get_window_size_blocks(step: int):
     window_size = next_multiple_of_n(1728 * x, n=128)
     return get_window_size_blocks_helper(window_size)
 def get_window_size(step: int):
-    x = step / args.num_iterations  # progress in training
+    num_iterations = 1200
+    x = step / num_iterations  # progress in training
     # Linearly increase the block-wise sliding window size over training 128 -> 1792
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
     window_size = next_multiple_of_n(1728 * x, n=128)
