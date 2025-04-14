@@ -610,12 +610,8 @@ def get_window_size_blocks_helper(window_size: int):
 
 
 def get_window_size_blocks(step: int):
-    num_iterations = 1200
-    # Apply modulo to make step cycle from 1 to 1200
-    cycled_step = (step - 1) % num_iterations + 1
-
     # Now calculate x using the cycled step
-    x = cycled_step / num_iterations  # progress in training
+    x = math.sqrt(step / args.num_iterations)  # progress in training
     assert 0 <= x <= 1
 
     # Linearly increase the block-wise sliding window size over training 128 -> 1792
