@@ -478,7 +478,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 1200 # number of iterations to run
+    num_iterations = 6710 # number of iterations to run
     cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -643,6 +643,10 @@ for step in range(train_steps + 1):
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
+        print0(f"block size: {get_window_size(step)}")
+        for opt in optimizers:
+            for group in opt.param_groups:
+                print0(f"step {step} learning rate: {group['lr']:.5f}")
         if hasattr(model, "skip_weights"):
             print0(s=f"{model.skip_weights}")
         print0(s="\n".join([f"{i} {block.lambdas.tolist()}" for i, block in enumerate(model.blocks)]))
@@ -663,7 +667,6 @@ for step in range(train_steps + 1):
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
-    print0(f"block size: {get_window_size(step)}")
     opt2works = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True) for p in params]
         for opt, params in opt2params.items()
@@ -672,7 +675,6 @@ for step in range(train_steps + 1):
     for opt in optimizers:
         for group in opt.param_groups:
             group["lr"] = group["initial_lr"] * get_lr(step)
-            print0(f"step {step} learning rate: {group['lr']:.5f}")
     for group in optimizer2.param_groups:
         frac = min(step / 300, 1) # momentum warmup for muon
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
