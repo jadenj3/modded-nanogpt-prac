@@ -554,7 +554,7 @@ def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
 opt2params = {opt: opt_params(opt) for opt in optimizers}
 for opt in optimizers:
     for group in opt.param_groups:
-        group["initial_lr"] = group["lr"]*0.5
+        group["initial_lr"] = group["lr"]
 
 # learning rate schedule: stable then decay
 def get_lr(step: int):
@@ -573,8 +573,8 @@ def get_lr(step: int):
 def get_window_size_blocks_helper(window_size: int):
     return torch.tensor(window_size // 128, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
 def get_window_size_blocks(step: int):
-    num_iterations = 1200
-    x = step / num_iterations # progress in training
+    #num_iterations = 1200
+    x = step / args.num_iterations # progress in training
     #assert 0 <= x <= 1
     # Linearly increase the block-wise sliding window size over training 128 -> 1792
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
