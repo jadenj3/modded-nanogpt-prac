@@ -596,12 +596,12 @@ for opt in optimizers:
 
 # learning rate schedule: stable then decay
 def get_lr(step: int):
-    x = step / args.num_iterations # progress in training
+    # Apply modulo to make step cycle from 0 to 1199
+    x = step / args.num_iterations  # progress in training
     assert 0 <= x < 1
-    if x < 1 - args.cooldown_frac:
-        return 1.0
-    else:
-        return (1 - x) / args.cooldown_frac
+
+    # Apply the new formula: 1 - 0.95x²
+    return 1.0 - 0.95 * (x ** 2)
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
