@@ -560,8 +560,8 @@ for opt in optimizers:
 def get_lr(step: int):
     x = step / args.num_iterations  # progress in training
     assert 0 <= x < 1
-    if step == 2750:
-        return 2.0
+    if step >= 2200:
+        return 1.0
 
     if x < 1 - args.cooldown_frac:
         return 1.0
