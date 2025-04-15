@@ -583,7 +583,7 @@ def get_window_size_blocks_helper(window_size: int):
 
 def get_window_size_blocks(step: int):
     # Now calculate x using the cycled step
-    x = (step / args.num_iterations)**2  # progress in training
+    x = (step / args.num_iterations)**1.5  # progress in training
     #x = 0.5*(1 - math.cos(math.pi  * x)) #cool!
     assert 0 <= x <= 1
 
