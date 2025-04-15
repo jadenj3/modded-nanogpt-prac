@@ -479,7 +479,7 @@ class Hyperparameters:
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
     num_iterations = 6715 # number of iterations to run
-    cooldown_frac = 0.8 # fraction of training spent cooling down the learning rate
+    cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -584,8 +584,7 @@ def get_window_size_blocks(step: int):
     assert 0 <= x <= 1
     # Linearly increase the block-wise sliding window size over training 128 -> 1792
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
-    factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
-    window_size = next_multiple_of_n(2176 * factor, n=128)
+    window_size = next_multiple_of_n(1728 * x, n=128)
     return get_window_size_blocks_helper(window_size)
 
 def get_window_size(step: int):
