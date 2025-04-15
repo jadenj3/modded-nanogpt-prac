@@ -557,23 +557,23 @@ for opt in optimizers:
         group["initial_lr"] = group["lr"]
 import math
 # learning rate schedule: stable then decay
-
+'''
 def get_lr(step: int):
     # Apply modulo to make step cycle from 0 to 1199
     x = step / args.num_iterations  # progress in training
     assert 0 <= x < 1
 
     # Apply the new formula: 1 - 0.95x²
-    return 1.0 - 0.95 * (x ** 2)
+    return 1.0 - 0.95 * (x ** 2)'''
 
-'''
+
 def get_lr(step: int):
     x = step / args.num_iterations # progress in training
     assert 0 <= x < 1
     if x < 1 - args.cooldown_frac:
         return 1.0
     else:
-        return (1 - x) / args.cooldown_frac'''
+        return (1 - x) / args.cooldown_frac
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
@@ -583,8 +583,8 @@ def get_window_size_blocks_helper(window_size: int):
 
 def get_window_size_blocks(step: int):
     # Now calculate x using the cycled step
-    x = step / args.num_iterations  # progress in training
-    x = 0.5*(1 - math.cos(math.pi  * x)) #cool!
+    x = (step / args.num_iterations)**2  # progress in training
+    #x = 0.5*(1 - math.cos(math.pi  * x)) #cool!
     assert 0 <= x <= 1
 
     # Linearly increase the block-wise sliding window size over training 128 -> 1792
