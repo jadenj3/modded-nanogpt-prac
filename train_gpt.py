@@ -27,7 +27,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(999)
+seed_everything(12)
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
 
@@ -555,13 +555,19 @@ opt2params = {opt: opt_params(opt) for opt in optimizers}
 for opt in optimizers:
     for group in opt.param_groups:
         group["initial_lr"] = group["lr"]
-
+import math
 # learning rate schedule: stable then decay
+'''
 def get_lr(step: int):
-    num_iters = 5900
-    x = step / num_iters # progress in training
-    min_val = step/(step+1)
-    x = min(x, min_val)
+    # Apply modulo to make step cycle from 0 to 1199
+    x = step / args.num_iterations  # progress in training
+    assert 0 <= x < 1
+
+    # Apply the new formula: 1 - 0.95x²
+    return 1.0 - 0.95 * (x ** 2)'''
+
+def get_lr(step: int):
+    x = step / args.num_iterations # progress in training
     assert 0 <= x < 1
     if x < 1 - args.cooldown_frac:
         return 1.0
@@ -572,24 +578,27 @@ def get_lr(step: int):
 @lru_cache(1)
 def get_window_size_blocks_helper(window_size: int):
     return torch.tensor(window_size // 128, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-import math
+
+
 def get_window_size_blocks(step: int):
+    # Now calculate x using the cycled step
     x = step / args.num_iterations  # progress in training
+    x = 0.5*(1 - math.cos(math.pi  * x)) #cool!
+    assert 0 <= x <= 1
 
-    # Add a sine component to the linear progression
-    # This creates faster growth at beginning and end, slower in middle
-    factor = 4 * x**3 - 6 * x**2 + 3 * x #cool, works!
-
-    window_size = next_multiple_of_n(1728 * factor, n=128)
+    # Linearly increase the block-wise sliding window size over training 128 -> 1792
+    # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
+    window_size = next_multiple_of_n(1728 * x, n=128)
     return get_window_size_blocks_helper(window_size)
 def get_window_size(step: int):
     num_iterations = 1200
-    x = step / num_iterations  # progress in training
+    x = step / args.num_iterations  # progress in training
+    x = 0.5 * (1 - math.cos(math.pi * x))  # cool!
+    assert 0 <= x <= 1
+
     # Linearly increase the block-wise sliding window size over training 128 -> 1792
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
-    factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
-
-    window_size = next_multiple_of_n(1728 * factor, n=128)
+    window_size = next_multiple_of_n(1728 * x, n=128)
     return window_size
 
 model: nn.Module = torch.compile(model, dynamic=False)
