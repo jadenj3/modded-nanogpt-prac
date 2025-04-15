@@ -566,7 +566,7 @@ def get_lr(step: int):
     # Apply the new formula: 1 - 0.95x²
     return 1.0 - 0.95 * (x ** 2)'''
 
-
+#commit
 def get_lr(step: int):
     x = step / args.num_iterations # progress in training
     assert 0 <= x < 1
