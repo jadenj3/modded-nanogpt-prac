@@ -573,8 +573,8 @@ def get_lr(step: int):
     assert 0 <= x < 1
 
     # Apply the new formula: 1 - 0.95x²
-    #return 1.0 - 0.95 * (x ** 2)
-    return 1.0 - 0.97*(4 * x**3 - 6 * x**2 + 3 * x)
+    return 1.0 - 0.95 * (x ** 2)
+    #return 1.0 - 0.97*(4 * x**3 - 6 * x**2 + 3 * x)
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
