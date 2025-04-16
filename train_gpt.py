@@ -479,7 +479,7 @@ class Hyperparameters:
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
     num_iterations = 6170 # number of iterations to run
-    cooldown_frac = 0.8 # fraction of training spent cooling down the learning rate
+    cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
