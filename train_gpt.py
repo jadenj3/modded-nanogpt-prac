@@ -594,8 +594,9 @@ def get_window_size(step: int):
     assert 0 <= x <= 1
     # Linearly increase the block-wise sliding window size over training 128 -> 1792
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
-    factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
-    window_size = next_multiple_of_n(3456 * factor, n=128)
+    #factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
+    #window_size = next_multiple_of_n(3456 * factor, n=128)
+    window_size = next_multiple_of_n(3456 * x, n=128)
     return window_size
 
 model: nn.Module = torch.compile(model, dynamic=False)
