@@ -17,17 +17,8 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-#torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
-import random
-def seed_everything(seed):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(433)
+torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
+
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
@@ -105,19 +96,20 @@ class Muon(torch.optim.Optimizer):
             params: list[Tensor] = group["params"]
             momentum = torch._as_tensor_fullprec(group["momentum"])
             for base_i in range(len(params))[::self.world_size]:
-                p = params[min(base_i + self.rank, len(params) - 1)]
-                state = self.state[p]
-                if len(state) == 0:
-                    state["mantissa"] = torch.zeros_like(p, dtype=torch.uint16)
-                    state["momentum_buffer"] = torch.zeros_like(p, dtype=torch.float32)
-                update(
-                    p.view(torch.uint16), state["mantissa"], state["momentum_buffer"],
-                    p.grad, momentum,
-                    eff_lr=torch._as_tensor_fullprec(group["lr"] * max(1, p.size(-2) / p.size(-1)) ** 0.5),
-                    eff_weight_decay=torch._as_tensor_fullprec(group["lr"] * group["weight_decay"] * getattr(p, "wd_mul", 1.0)),
-                )
-                p_list = [params[min(base_i + i, len(params) - 1)] for i in range(self.world_size)]
-                futures.append(dist.all_gather(p_list, p_list[self.rank], async_op=True).get_future())
+                if base_i + self.rank < len(params):
+                    p = params[base_i + self.rank]
+                    state = self.state[p]
+                    if len(state) == 0:
+                        state["mantissa"] = torch.zeros_like(p, dtype=torch.uint16)
+                        state["momentum_buffer"] = torch.zeros_like(p, dtype=torch.float32)
+                    update(
+                        p.view(torch.uint16), state["mantissa"], state["momentum_buffer"],
+                        p.grad, momentum,
+                        eff_lr=torch._as_tensor_fullprec(group["lr"] * max(1, p.size(-2) / p.size(-1)) ** 0.5),
+                        eff_weight_decay=torch._as_tensor_fullprec(group["lr"] * group["weight_decay"] * getattr(p, "wd_mul", 1.0)),
+                    )
+                for src_rank, p in enumerate(params[base_i:base_i + self.world_size]):
+                    futures.append(dist.broadcast(p, src=src_rank, async_op=True).get_future())
         torch.futures.collect_all(futures).wait()
 
 # -----------------------------------------------------------------------------
@@ -357,8 +349,8 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6450 # number of iterations to run
-    cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
+    num_iterations = 5960 # number of iterations to run
+    cooldown_frac = 0.75 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -416,7 +408,7 @@ for param in model.parameters():
     dist.broadcast(param.detach(), 0)
 
 # collect the parameters to optimize
-hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
+hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size())
 embed_params = [*model.embed.parameters()]
 value_embeds_params = [*model.value_embeds.parameters()]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
@@ -457,9 +449,10 @@ def get_window_size_blocks_helper(window_size: int):
 def get_window_size_blocks(step: int):
     x = step / args.num_iterations # progress in training
     assert 0 <= x <= 1
-    # Linearly increase the block-wise sliding window size over training 128 -> 1792
-    # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
-    window_size = next_multiple_of_n(1728 * x, n=128)
+    # Cubic increase the block-wise sliding window size over training 128 -> 3456
+    # increase by @fernbear.bsky.social; block-wise by @YouJiacheng; cubic by @jadenj3
+    factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
+    window_size = next_multiple_of_n(3456 * factor, n=128)
     return get_window_size_blocks_helper(window_size)
 
 model: nn.Module = torch.compile(model, dynamic=False)
