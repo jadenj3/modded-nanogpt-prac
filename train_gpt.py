@@ -349,8 +349,8 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6450 # number of iterations to run
-    cooldown_frac = 0.6 # fraction of training spent cooling down the learning rate
+    num_iterations = 6000 # number of iterations to run
+    cooldown_frac = 0.7 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -449,9 +449,10 @@ def get_window_size_blocks_helper(window_size: int):
 def get_window_size_blocks(step: int):
     x = step / args.num_iterations # progress in training
     assert 0 <= x <= 1
-    # Linearly increase the block-wise sliding window size over training 128 -> 1792
-    # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
-    window_size = next_multiple_of_n(1728 * x, n=128)
+    # Cubic increase the block-wise sliding window size over training 128 -> 3456
+    # increase by @fernbear.bsky.social; block-wise by @YouJiacheng; cubic by @jadenj3
+    factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
+    window_size = next_multiple_of_n(3456 * factor, n=128)
     return get_window_size_blocks_helper(window_size)
 
 model: nn.Module = torch.compile(model, dynamic=False)
@@ -549,4 +550,4 @@ for step in range(train_steps + 1):
 
 print0(f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
        f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB", console=True)
-dist.destroy_process_group() #test
+dist.destroy_process_group()
