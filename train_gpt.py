@@ -17,7 +17,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-#torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
+torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 # -----------------------------------------------------------------------------
 # Muon optimizer
@@ -349,7 +349,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6000 # number of iterations to run
+    num_iterations = 5920 # number of iterations to run
     cooldown_frac = 0.7 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
