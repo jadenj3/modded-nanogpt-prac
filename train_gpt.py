@@ -283,6 +283,20 @@ class GPT(nn.Module):
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
+    def _separation_loss(self) -> Tensor:
+        """Mean-squared cosine of randomly-sampled embedding pairs.
+           Minimising → pushes embeddings toward orthogonality / uniformity."""
+
+        E = self.embed.weight  # (V, d)
+        V = E.shape[0]
+        k = min(2048, V)
+        idx = torch.randint(0, V, (k,), device=E.device)
+        S = F.normalize(E[idx], dim=1)  # (k, d)  unit-norm rows
+        cos = S @ S.T  # (k, k)
+
+        off_diag = cos[~torch.eye(k, dtype=torch.bool, device=E.device)]
+        return off_diag.square().mean()  # single scalar
+
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
@@ -312,7 +326,8 @@ class GPT(nn.Module):
         x = norm(x)
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
+        aux_loss = self._separation_loss()
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq) + 0.5 * aux_loss
         return loss
 
 # -----------------------------------------------------------------------------
