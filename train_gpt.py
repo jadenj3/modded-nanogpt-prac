@@ -327,8 +327,8 @@ class GPT(nn.Module):
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         aux_loss = self._separation_loss()
-        #print(aux_loss)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq) #+ 0.5 * aux_loss
+        print(aux_loss)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq) + 1000 * aux_loss
         print(loss)
         return loss
 
