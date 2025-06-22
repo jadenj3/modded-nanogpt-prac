@@ -289,7 +289,7 @@ class GPT(nn.Module):
 
         E = self.embed.weight  # (V, d)
         V = E.shape[0]
-        k = min(428, V)
+        k = min(2048, V)
         idx = torch.randint(0, V, (k,), device=E.device)
         S = F.normalize(E[idx], dim=1)  # (k, d)  unit-norm rows
         cos = S @ S.T  # (k, k)
@@ -327,7 +327,8 @@ class GPT(nn.Module):
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         aux_loss = self._separation_loss()
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq) #+ 0.5 * aux_loss
+        print(aux_loss)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq) + 0.5 * aux_loss
         return loss
 
 # -----------------------------------------------------------------------------
