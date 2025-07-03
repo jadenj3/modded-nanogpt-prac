@@ -106,6 +106,8 @@ class Muon(torch.optim.Optimizer):
             momentum = torch._as_tensor_fullprec(group["momentum"])
             for base_i in range(len(params))[::self.world_size]:
                 p = params[min(base_i + self.rank, len(params) - 1)]
+                if p.grad is None:
+                    continue
                 state = self.state[p]
                 if len(state) == 0:
                     state["mantissa"] = torch.zeros_like(p, dtype=torch.uint16)
