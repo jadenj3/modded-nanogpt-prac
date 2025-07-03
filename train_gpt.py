@@ -241,8 +241,8 @@ class GPT(nn.Module):
         self.lm_head_w = nn.Parameter(torch.zeros(next_multiple_of_n(vocab_size, n=128), model_dim))
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers))
-        self.feature_weights = nn.Parameter(torch.ones(model_dim))
+        self.skip_weights = nn.Parameter(torch.ones(num_layers, dtype=torch.bfloat16))
+        self.feature_weights = nn.Parameter(torch.ones(model_dim, dtype=torch.bfloat16))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
