@@ -277,15 +277,16 @@ class GPT(nn.Module):
         is_outside_window = block_idx[:, None] < (block_idx - sliding_window_num_blocks)
         random_candidate_mask = causal_blockmask_all & document_blockmask_any & is_outside_window
 
-        # 2. Use the Gumbel-Max trick to select one random block per query row.
+        # 2. Use the Gumbel-Top-K trick to select TWO random blocks per query row.
         candidate_logits = torch.where(random_candidate_mask, 0.0, -torch.inf)
         gumbel_noise = torch.rand_like(candidate_logits, memory_format=torch.contiguous_format).log().neg().log().neg()
-        selected_random_indices = torch.argmax(candidate_logits + gumbel_noise, dim=-1)
+        # CHANGE 1: Replace argmax with topk(k=2) to get the indices of the top two candidates.
+        _, selected_random_indices = torch.topk(candidate_logits + gumbel_noise, k=2, dim=-1)
 
         # 3. Create a sparse mask containing only our new random connections.
-        # CORRECTED LINE: Use a mask that already exists, like causal_blockmask_any.
         random_block_mask = torch.zeros_like(causal_blockmask_any)
-        random_block_mask.scatter_(1, selected_random_indices.unsqueeze(-1), True)
+        # CHANGE 2: The indices tensor is now the correct shape, so we pass it directly to scatter_.
+        random_block_mask.scatter_(1, selected_random_indices, True)
         random_block_mask &= random_candidate_mask
 
         # --- END: New logic ---
