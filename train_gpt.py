@@ -272,26 +272,18 @@ class GPT(nn.Module):
         # --- START: New logic for adding a random block ---
 
         # 1. Define the pool of "candidate" random blocks.
-        # A block 'j' is a candidate for a query 'i' if it is:
-        #   a) Strictly in the past (causal).
-        #   b) Outside the main sliding window.
-        #   c) Within the same document.
         is_outside_window = block_idx[:, None] < (block_idx - sliding_window_num_blocks)
         random_candidate_mask = causal_blockmask_all & document_blockmask_any & is_outside_window
 
         # 2. Use the Gumbel-Max trick to select one random block per query row.
-        # This is a fast, vectorized way to sample.
-        # We add random Gumbel noise to the logits of the valid candidates and take the argmax.
         candidate_logits = torch.where(random_candidate_mask, 0.0, -torch.inf)
         gumbel_noise = torch.rand_like(candidate_logits, memory_format=torch.contiguous_format).log().neg().log().neg()
-        # Argmax gives us the index of the single random block we chose for each row.
         selected_random_indices = torch.argmax(candidate_logits + gumbel_noise, dim=-1)
 
         # 3. Create a sparse mask containing only our new random connections.
-        random_block_mask = torch.zeros_like(blockmask_any)
-        # Use scatter_ to place a 'True' at each (row, selected_column) coordinate.
+        # CORRECTED LINE: Use a mask that already exists, like causal_blockmask_any.
+        random_block_mask = torch.zeros_like(causal_blockmask_any)
         random_block_mask.scatter_(1, selected_random_indices.unsqueeze(-1), True)
-        # Ensure our random choice doesn't violate the candidate rules (it shouldn't, but this is safe).
         random_block_mask &= random_candidate_mask
 
         # --- END: New logic ---
