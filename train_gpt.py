@@ -293,6 +293,15 @@ class GPT(nn.Module):
 
         blockmask_any = causal_blockmask_any & document_blockmask_any
         blockmask_any = blockmask_any | random_block_mask  # <--- Add our new random connections to the main mask
+
+        import torch.distributed as dist
+        # Only save the image from the main process and only on the first step to avoid clutter
+        if dist.get_rank() == 0 and self.training and self.blocks[0].record[0] == 0.0:
+            import matplotlib.pyplot as plt
+            print("Saving blockmask pattern to image...")
+            # Convert boolean tensor to a float image and save it
+            plt.imsave("blockmask_pattern.png", blockmask_any.cpu().float().numpy(), cmap='gray')
+
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
