@@ -300,18 +300,18 @@ class GPT(nn.Module):
             # --- START: New code for printing the BlockMask contents ---
             import torch.distributed as dist
             # Only print from the main process and only on the first step
-            if dist.get_rank() == 0 and self.training and self.blocks[0].record[0] == 0.0:
+            if self.training and self.blocks[0].record[0] == 0.0:
                 # These tensors define the sparse mask for flex_attention
                 partial_blocks_to_attend = torch.clamp_max(partial_kv_num_blocks,
                                                            torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1))
                 full_blocks_to_attend = torch.clamp_max(full_kv_num_blocks, window_size_blocks - 1)
 
-                print("\n--- FlexAttention Mask Definition (Middle Block) ---")
+                print0("\n--- FlexAttention Mask Definition (Middle Block) ---", console = True)
                 query_block_idx = NUM_BLOCKS // 2
 
-                print(f"For query block {query_block_idx}, it will attend to:")
-                print(f"  > {partial_blocks_to_attend[0, 0, query_block_idx].item()} PARTIAL blocks")
-                print(f"  > {full_blocks_to_attend[0, 0, query_block_idx].item()} FULL blocks")
+                print0(f"For query block {query_block_idx}, it will attend to:", console = True)
+                print0(f"  > {partial_blocks_to_attend[0, 0, query_block_idx].item()} PARTIAL blocks", console = True)
+                print0(f"  > {full_blocks_to_attend[0, 0, query_block_idx].item()} FULL blocks", console = True)
 
                 # Get the indices of the blocks it will attend to
                 num_partial = partial_blocks_to_attend[0, 0, query_block_idx].item()
@@ -320,9 +320,9 @@ class GPT(nn.Module):
                 partial_indices = partial_kv_indices[0, 0, query_block_idx, :num_partial]
                 full_indices = full_kv_indices[0, 0, query_block_idx, :num_full]
 
-                print(f"  > Partial Block Indices: {partial_indices.tolist()}")
-                print(f"  > Full Block Indices: {full_indices.tolist()}")
-                print("--------------------------------------------------\n")
+                print0(f"  > Partial Block Indices: {partial_indices.tolist()}", console = True)
+                print0(f"  > Full Block Indices: {full_indices.tolist()}", console = True)
+                print0("--------------------------------------------------\n", console = True)
             # --- END: New code ---
             return BlockMask.from_kv_blocks(
                 torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
