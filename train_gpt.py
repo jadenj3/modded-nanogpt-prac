@@ -294,8 +294,10 @@ class GPT(nn.Module):
         blockmask_any = causal_blockmask_any & document_blockmask_any
         blockmask_any = blockmask_any | random_block_mask  # <--- Add our new random connections to the main mask
         torch.set_printoptions(profile="full")
-        print0(f"sliding number of blocks: {sliding_window_num_blocks}", console = True)
-        print0(f"blockmask matrix shape:  {blockmask_any.shape}", console = True)
+        random_number = random.randint(1, 10)
+        if random_number == 2:
+            print0(f"sliding number of blocks: {sliding_window_num_blocks}", console = True)
+            print0(f"blockmask matrix:  {blockmask_any}", console = True)
         torch.set_printoptions(profile="default")
 
         blockmask_all = causal_blockmask_all & document_blockmask_all
