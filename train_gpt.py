@@ -316,6 +316,7 @@ class GPT(nn.Module):
         print0("---------------------------------------------------\n")
         print0(f"\n Clamp function on the sliding window blocks:  {torch.clamp_max(full_kv_num_blocks, sliding_window_num_blocks - 1)}")
         print0(f"Full kv num blocks: {full_kv_num_blocks}")
+        print0(f"Full kv indices:  {full_kv_indices}")
         '''
         print0("\n--- Indices of True Values for Middle Query Block ---")
         list_indices = true_indices.tolist()
