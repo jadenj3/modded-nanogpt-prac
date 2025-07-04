@@ -271,34 +271,14 @@ class GPT(nn.Module):
         document_blockmask_any = (docs_low[:, None] <= docs_high) & (docs_high[:, None] >= docs_low)
         document_blockmask_all = (docs_low[:, None] == docs_high) & (docs_high[:, None] == docs_low)
 
-        # --- START: New logic for adding a random block ---
-
-        # 1. Define the pool of "candidate" random blocks.
-        is_outside_window = block_idx[:, None] < (block_idx - sliding_window_num_blocks)
-        random_candidate_mask = causal_blockmask_all & document_blockmask_any & is_outside_window
-
-        # 2. Use the Gumbel-Top-K trick to select TWO random blocks per query row.
-        candidate_logits = torch.where(random_candidate_mask, 0.0, -torch.inf)
-        gumbel_noise = torch.rand_like(candidate_logits, memory_format=torch.contiguous_format).log().neg().log().neg()
-        # CHANGE 1: Replace argmax with topk(k=2) to get the indices of the top two candidates.
-        _, selected_random_indices = torch.topk(candidate_logits + gumbel_noise, k=2, dim=-1)
-
-        # 3. Create a sparse mask containing only our new random connections.
-        random_block_mask = torch.zeros_like(causal_blockmask_any)
-        # CHANGE 2: The indices tensor is now the correct shape, so we pass it directly to scatter_.
-        random_block_mask.scatter_(1, selected_random_indices, True)
-        random_block_mask &= random_candidate_mask
-
-        # --- END: New logic ---
-
         blockmask_any = causal_blockmask_any & document_blockmask_any
-        blockmask_any = blockmask_any | random_block_mask  # <--- Add our new random connections to the main mask
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
         # 1. Isolate the single row for the middle query block
 
         # 2. Temporarily set print options to show the entire tensor
+        '''
         torch.set_printoptions(profile="full")
 
         # 1. Isolate the single row for the middle query block
@@ -311,12 +291,13 @@ class GPT(nn.Module):
 
 
         # 3. Print the result
+        
         print0("\n--- Sliding window number of blocks ---")
         print0(sliding_window_num_blocks)  # .tolist() converts it to a standard Python list
         print0("---------------------------------------------------\n")
         print0(f"\n Clamp function on the sliding window blocks:  {torch.clamp_max(full_kv_num_blocks, sliding_window_num_blocks - 1)}")
         print0(f"Full kv num blocks: {full_kv_num_blocks}")
-        print0(f"Full kv indices:  {full_kv_indices}")
+        print0(f"Full kv indices:  {full_kv_indices}")'''
         '''
         print0("\n--- Indices of True Values for Middle Query Block ---")
         list_indices = true_indices.tolist()
@@ -350,7 +331,9 @@ class GPT(nn.Module):
         assert len(ve) == len(self.blocks)
 
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
-        block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
+        #block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
+        block_masks = [long_bm, long_bm, long_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm,
+                       short_bm, short_bm, long_bm, long_bm, long_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
