@@ -296,7 +296,19 @@ class GPT(nn.Module):
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
-        print0(f"full kv indices: {full_kv_indices}")
+        # 1. Isolate the single row for the middle query block
+        middle_block_row = full_kv_indices[0, 0, NUM_BLOCKS // 2]
+
+        # 2. Temporarily set print options to show the entire tensor
+        torch.set_printoptions(profile="full")
+
+        # 3. Print the full, untruncated row
+        print0("\n--- Full Indices for Middle Query Block ---")
+        print0(middle_block_row)
+        print0("-----------------------------------------\n")
+
+        # 4. Reset print options back to default
+        torch.set_printoptions(profile="default")
         def build_bm(window_size_blocks: Tensor) -> BlockMask:
             return BlockMask.from_kv_blocks(
                 torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
