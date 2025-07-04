@@ -297,7 +297,7 @@ class GPT(nn.Module):
         random_number = random.randint(1, 10)
         if random_number == 2:
             print0(f"sliding number of blocks: {sliding_window_num_blocks}", console = True)
-            print0(f"blockmask matrix:  {blockmask_any}", console = True)
+            print0(f"middle blockmask matrix:  {blockmask_any[NUM_BLOCKS//2]}", console = True)
         torch.set_printoptions(profile="default")
 
         blockmask_all = causal_blockmask_all & document_blockmask_all
