@@ -315,7 +315,9 @@ class GPT(nn.Module):
         print0(sliding_window_num_blocks)  # .tolist() converts it to a standard Python list
         print0("---------------------------------------------------\n")
         print0("\n--- Indices of True Values for Middle Query Block ---")
-        print0(true_indices.tolist())  # .tolist() converts it to a standard Python list
+        list_indices = true_indices.tolist()
+        print0(list_indices)  # .tolist() converts it to a standard Python list
+        print0(f" length of true indices: {len(list_indices)}")
         print0("---------------------------------------------------\n")
         print0("\n--- Indices of True Values for Middle Query Block Doc mask---")
         print0(doc_true_indices.tolist())  # .tolist() converts it to a standard Python list
