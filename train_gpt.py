@@ -314,6 +314,7 @@ class GPT(nn.Module):
         print0("\n--- Sliding window number of blocks ---")
         print0(sliding_window_num_blocks)  # .tolist() converts it to a standard Python list
         print0("---------------------------------------------------\n")
+        print0(f"\n Clamp function on the sliding window blocks:  {torch.clamp_max(full_kv_num_blocks, sliding_window_num_blocks - 1)}")
         print0("\n--- Indices of True Values for Middle Query Block ---")
         list_indices = true_indices.tolist()
         print0(list_indices)  # .tolist() converts it to a standard Python list
