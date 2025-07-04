@@ -294,7 +294,7 @@ class GPT(nn.Module):
         blockmask_any = causal_blockmask_any & document_blockmask_any
         blockmask_any = blockmask_any | random_block_mask  # <--- Add our new random connections to the main mask
         torch.set_printoptions(profile="full")
-        print0(f"blockmask matrix shape:  {blockmask_any}", console = True)
+        print0(f"blockmask matrix shape:  {blockmask_any.shape}", console = True)
         torch.set_printoptions(profile="default")
 
         blockmask_all = causal_blockmask_all & document_blockmask_all
