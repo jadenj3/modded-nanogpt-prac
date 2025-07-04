@@ -311,6 +311,9 @@ class GPT(nn.Module):
 
 
         # 3. Print the result
+        print0("\n--- Sliding window number of blocks ---")
+        print0(sliding_window_num_blocks)  # .tolist() converts it to a standard Python list
+        print0("---------------------------------------------------\n")
         print0("\n--- Indices of True Values for Middle Query Block ---")
         print0(true_indices.tolist())  # .tolist() converts it to a standard Python list
         print0("---------------------------------------------------\n")
