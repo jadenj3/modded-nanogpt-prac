@@ -293,8 +293,9 @@ class GPT(nn.Module):
 
         blockmask_any = causal_blockmask_any & document_blockmask_any
         blockmask_any = blockmask_any | random_block_mask  # <--- Add our new random connections to the main mask
-
+        torch.set_printoptions(profile="full")
         print0(blockmask_any, console = True)
+        torch.set_printoptions(profile="default")
 
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
