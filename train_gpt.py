@@ -297,15 +297,20 @@ class GPT(nn.Module):
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
         # 1. Isolate the single row for the middle query block
-        middle_block_row = full_kv_indices[0, 0, NUM_BLOCKS // 2]
 
         # 2. Temporarily set print options to show the entire tensor
         torch.set_printoptions(profile="full")
 
-        # 3. Print the full, untruncated row
-        print0("\n--- Full Indices for Middle Query Block ---")
-        print0(middle_block_row)
-        print0("-----------------------------------------\n")
+        # 1. Isolate the single row for the middle query block
+        middle_block_row = blockmask_any[NUM_BLOCKS // 2]
+
+        # 2. Use .nonzero() to find all True indices and .flatten() to make it a 1D list
+        true_indices = middle_block_row.nonzero().flatten()
+
+        # 3. Print the result
+        print0("\n--- Indices of True Values for Middle Query Block ---")
+        print0(true_indices.tolist())  # .tolist() converts it to a standard Python list
+        print0("---------------------------------------------------\n")
 
         # 4. Reset print options back to default
         torch.set_printoptions(profile="default")
