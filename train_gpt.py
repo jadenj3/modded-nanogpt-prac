@@ -306,10 +306,16 @@ class GPT(nn.Module):
 
         # 2. Use .nonzero() to find all True indices and .flatten() to make it a 1D list
         true_indices = middle_block_row.nonzero().flatten()
+        document_blockmask_row =  document_blockmask_any[NUM_BLOCKS // 2]
+        doc_true_indices = document_blockmask_row.nonzero().flatten()
+
 
         # 3. Print the result
         print0("\n--- Indices of True Values for Middle Query Block ---")
         print0(true_indices.tolist())  # .tolist() converts it to a standard Python list
+        print0("---------------------------------------------------\n")
+        print0("\n--- Indices of True Values for Middle Query Block Doc mask---")
+        print0(doc_true_indices.tolist())  # .tolist() converts it to a standard Python list
         print0("---------------------------------------------------\n")
 
         # 4. Reset print options back to default
@@ -334,7 +340,7 @@ class GPT(nn.Module):
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
         assert len(ve) == len(self.blocks)
 
-        long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
+        long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
         block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
 
