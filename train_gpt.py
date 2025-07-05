@@ -320,7 +320,7 @@ class GPT(nn.Module):
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 4), build_bm(sliding_window_num_blocks // 4)
+        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 8), build_bm(sliding_window_num_blocks // 4)
 
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
