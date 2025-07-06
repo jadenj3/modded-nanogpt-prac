@@ -154,7 +154,7 @@ class Rotary(nn.Module):
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, head_dim=128):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx, head_dim=128):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
@@ -168,13 +168,15 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
+        self.layer_idx = layer_idx
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = F.linear(x, self.qkvo_w[:3].flatten(end_dim=1)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
         q, k = norm(q), norm(k) # QK norm @Grad62304977
-        q, k = self.rotary(q), self.rotary(k)
+        if self.layer_idx % 2:
+            q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
@@ -204,11 +206,9 @@ class Block(nn.Module):
     def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
-        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
+        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len, layer_idx) if layer_idx != 7 else None
         self.mlp = MLP(dim)
-        self.mlp2 = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
-        self.lambdas2 = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
@@ -220,8 +220,7 @@ class Block(nn.Module):
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
-        x = norm(x)
-        z = self.lambdas2[0]*self.mlp(x) + self.lambdas2[1]*self.mlp2(x)
+        z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
         x = x + z
