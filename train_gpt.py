@@ -320,7 +320,7 @@ class GPT(nn.Module):
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 7), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks // 10)
+        return build_bm(sliding_window_num_blocks*2), build_bm(sliding_window_num_blocks // 7), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks // 10)
 
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
@@ -332,7 +332,7 @@ class GPT(nn.Module):
 
         long_bm, short_bm, mid_bm, shortest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
         #block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
-        block_masks = [long_bm, short_bm, short_bm, shortest_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, shortest_bm, short_bm, short_bm, long_bm]
+        block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
         #block_masks = [long_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, short_bm, shorter_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, shorter_bm, short_bm, long_bm]
         #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
