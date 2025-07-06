@@ -309,7 +309,7 @@ class GPT(nn.Module):
         print0("---------------------------------------------------\n")'''
 
         # 4. Reset print options back to default
-        torch.set_printoptions(profile="default")
+        #torch.set_printoptions(profile="default")
         def build_bm(window_size_blocks: Tensor) -> BlockMask:
             return BlockMask.from_kv_blocks(
                 torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
@@ -329,7 +329,8 @@ class GPT(nn.Module):
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]] # visualize this to see whats going on
         torch.set_printoptions(profile="full")
-        print0(f"first ve tensor: {ve[0]}", console = True)
+        print0(f"first ve tensor: {ve[0]}")
+        torch.set_printoptions(profile="default")
         assert len(ve) == len(self.blocks)
 
         long_bm, short_bm, mid_bm, shortest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
