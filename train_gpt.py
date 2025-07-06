@@ -337,14 +337,7 @@ class GPT(nn.Module):
         #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
         assert len(block_masks) == len(self.blocks)
-        x0 = self.embed(input_seq)[None]
-
-        torch.set_printoptions(profile="full")
-        print0("---------------------------------------------------\n")
-        print0(f"first ve tensor: {ve[0]}")
-        print0("---------------------------------------------------\n")
-        torch.set_printoptions(profile="default")
-        x = x0 = norm(x0)  # use of norm here by @Grad62304977
+        x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
         skip_connections = []
         skip_map = {
             9: 6,
