@@ -208,6 +208,7 @@ class Block(nn.Module):
         self.mlp = MLP(dim)
         self.mlp2 = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
+        self.lambdas2 = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
@@ -220,7 +221,7 @@ class Block(nn.Module):
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
         x = norm(x)
-        z = self.mlp(x) + self.mlp2(x)
+        z = self.lambdas2[0]*self.mlp(x) + self.lambdas2[1]*self.mlp2(x)
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
         x = x + z
