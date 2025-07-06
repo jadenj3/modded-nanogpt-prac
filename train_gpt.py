@@ -340,14 +340,8 @@ class GPT(nn.Module):
         x0 = self.embed(input_seq)[None]
         torch.set_printoptions(profile="full")
         print0("---------------------------------------------------\n")
-        print0(f"initial embedding un-normed: {x0}")
-        print0("---------------------------------------------------\n")
         print0(f"first ve tensor: {ve[0]}")
         print0("---------------------------------------------------\n")
-        print0(f"second ve tensor: {ve[1]}")
-        print0("---------------------------------------------------\n")
-        print0(f"third ve tensor: {ve[2]}")
-
         torch.set_printoptions(profile="default")
         x = x0 = norm(x0)  # use of norm here by @Grad62304977
         skip_connections = []
