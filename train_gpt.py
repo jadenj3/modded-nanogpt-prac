@@ -328,6 +328,8 @@ class GPT(nn.Module):
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]] # visualize this to see whats going on
+        torch.set_printoptions(profile="full")
+        print0(f"first ve tensor: {ve[0]}", console = True)
         assert len(ve) == len(self.blocks)
 
         long_bm, short_bm, mid_bm, shortest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
