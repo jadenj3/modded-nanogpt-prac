@@ -328,9 +328,6 @@ class GPT(nn.Module):
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]] # visualize this to see whats going on
-        torch.set_printoptions(profile="full")
-        print0(f"first ve tensor: {ve[0]}")
-        torch.set_printoptions(profile="default")
         assert len(ve) == len(self.blocks)
 
         long_bm, short_bm, mid_bm, shortest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
@@ -340,9 +337,19 @@ class GPT(nn.Module):
         #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
         assert len(block_masks) == len(self.blocks)
+        x0 = self.embed(input_seq)[None]
+        torch.set_printoptions(profile="full")
+        print0("---------------------------------------------------\n")
+        print0(f"initial embedding un-normed: {x0}")
+        print0("---------------------------------------------------\n")
+        print0(f"first ve tensor: {ve[0]}")
+        print0("---------------------------------------------------\n")
+        print0(f"second ve tensor: {ve[1]}")
+        print0("---------------------------------------------------\n")
+        print0(f"third ve tensor: {ve[2]}")
 
-        x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-
+        torch.set_printoptions(profile="default")
+        x = x0 = norm(x0)  # use of norm here by @Grad62304977
         skip_connections = []
         skip_map = {
             9: 6,
