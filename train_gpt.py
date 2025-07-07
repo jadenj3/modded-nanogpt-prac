@@ -460,7 +460,7 @@ for param in model.parameters():
 
 # collect the parameters to optimize
 hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
-hidden_matrix_params.append(model.feature_weights)
+#hidden_matrix_params.append(model.feature_weights)
 embed_params = [*model.embed.parameters()]
 value_embeds_params = [*model.value_embeds.parameters()]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
