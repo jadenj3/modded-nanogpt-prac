@@ -245,7 +245,7 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         self.skip_weights = nn.Parameter(torch.ones(num_layers, dtype=torch.bfloat16))
-        self.feature_weights = nn.Parameter(torch.ones(num_layers, model_dim, dtype=torch.bfloat16))
+        #self.feature_weights = nn.Parameter(torch.ones(num_layers, model_dim, dtype=torch.bfloat16))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -460,7 +460,7 @@ for param in model.parameters():
 
 # collect the parameters to optimize
 hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
-hidden_matrix_params.append(model.feature_weights)
+#hidden_matrix_params.append(model.feature_weights)
 embed_params = [*model.embed.parameters()]
 value_embeds_params = [*model.value_embeds.parameters()]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
