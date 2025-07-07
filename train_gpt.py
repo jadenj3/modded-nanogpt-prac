@@ -217,7 +217,7 @@ class Block(nn.Module):
             stacked_prev_layers = torch.stack(prev_layers)
             broadcastable_weights = self.dense_weights.view(-1, 1, 1, 1)
             dense_contribution = torch.sum(stacked_prev_layers * broadcastable_weights, dim=0)
-            x = x + dense_contribution
+            x = dense_contribution
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
