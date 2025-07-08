@@ -346,7 +346,7 @@ class GPT(nn.Module):
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
         assert len(block_masks) == len(self.blocks)
         x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
-        skip_connections = []
+        skip_connections = [] # maybe try different x0s?
         skip_map = {
             9: 6,
             10: 4,
