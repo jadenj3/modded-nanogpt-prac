@@ -318,7 +318,7 @@ class GPT(nn.Module):
                 torch.clamp_max(full_kv_num_blocks, window_size_blocks - 1),
                 full_kv_indices,
                 BLOCK_SIZE=BLOCK_SIZE,
-                #mask_mod=document_causal,
+                mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 7), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks // 10)
