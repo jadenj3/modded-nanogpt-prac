@@ -134,6 +134,13 @@ def init_linear(w: Tensor):
     bound = (3 ** 0.5) * std
     return w.uniform_(-bound, bound)
 
+def quasicrystal_transform(x, strength=0.1):
+    """Dead simple but effective"""
+    phi = 1.618
+    # Mix with golden-ratio shifted version
+    shifted = torch.roll(x, int(x.shape[-1] / phi), -1)
+    return x + strength * shifted * torch.cos(torch.arange(x.shape[-1]) * phi)
+
 class Rotary(nn.Module):
     def __init__(self, dim: int, max_seq_len: int):
         super().__init__()
@@ -222,7 +229,7 @@ class Block(nn.Module):
         z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-        x = x + z
+        x = x + quasicrystal_transform(z)
         return x
 
 # -----------------------------------------------------------------------------
