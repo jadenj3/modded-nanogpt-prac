@@ -209,15 +209,8 @@ class Block(nn.Module):
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
-        if layer_idx > 0:
-            self.dense_weights = nn.Parameter(torch.ones(layer_idx, dtype=torch.bfloat16))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_layers):
-        if prev_layers:  # This is equivalent to checking if layer_idx > 0
-            stacked_prev_layers = torch.stack(prev_layers)
-            broadcastable_weights = self.dense_weights.view(-1, 1, 1, 1)
-            dense_contribution = torch.sum(stacked_prev_layers * broadcastable_weights, dim=0)
-            x = dense_contribution
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
@@ -355,7 +348,7 @@ class GPT(nn.Module):
         for i in range(len(self.blocks)):
             if i in skip_map:
                 x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
-            x = self.blocks[i](x, ve[i], x0, block_masks[i], skip_connections)
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
             skip_connections.append(x)
 
         x = norm(x)
