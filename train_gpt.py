@@ -134,28 +134,6 @@ def init_linear(w: Tensor):
     bound = (3 ** 0.5) * std
     return w.uniform_(-bound, bound)
 
-def quasicrystal_transform(x, strength=0.5):
-    """Dead simple but effective"""
-    phi = 1.618
-    # Mix with golden-ratio shifted version
-    shifted = torch.roll(x, int(x.shape[-1] / phi), -1)
-    arange_tensor = torch.arange(x.shape[-1], device=x.device)
-    # The expression is upcast to float32, so cast it back to x's original dtype
-    return (x + strength * shifted * torch.cos(arange_tensor * phi)).type_as(x)
-
-class quasiTransform(nn.Module):
-    def __init__(self, strength=0.5):
-        super().__init__()
-        self.weights = nn.Parameter(torch.tensor([0.5, 0.5]))
-
-    def forward(self, x):
-        phi = 1.618
-        # Mix with golden-ratio shifted version
-        shifted = torch.roll(x, int(x.shape[-1] / phi), -1)
-        arange_tensor = torch.arange(x.shape[-1], device=x.device)
-        # The expression is upcast to float32, so cast it back to x's original dtype
-        return (self.weights[0]*x + self.weights[1] * shifted * torch.cos(arange_tensor * phi)).type_as(x)
-
 class Rotary(nn.Module):
     def __init__(self, dim: int, max_seq_len: int):
         super().__init__()
@@ -231,8 +209,6 @@ class Block(nn.Module):
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
-        self.quasi_transform1 = quasiTransform()
-        self.quasi_transform2 = quasiTransform()
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
@@ -242,11 +218,11 @@ class Block(nn.Module):
             z = self.attn(x, ve, block_mask)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-            x = x + self.quasi_transform1(z)
+            x = x + z
         z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-        x = x + self.quasi_transform1(z)
+        x = x + z
         return x
 
 # -----------------------------------------------------------------------------
