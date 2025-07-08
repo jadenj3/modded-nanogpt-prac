@@ -139,7 +139,9 @@ def quasicrystal_transform(x, strength=0.1):
     phi = 1.618
     # Mix with golden-ratio shifted version
     shifted = torch.roll(x, int(x.shape[-1] / phi), -1)
-    return x + strength * shifted * torch.cos(torch.arange(x.shape[-1]) * phi)
+    # Ensure the arange tensor is on the same device as x
+    arange_tensor = torch.arange(x.shape[-1], device=x.device)
+    return x + strength * shifted * torch.cos(arange_tensor * phi)
 
 class Rotary(nn.Module):
     def __init__(self, dim: int, max_seq_len: int):
