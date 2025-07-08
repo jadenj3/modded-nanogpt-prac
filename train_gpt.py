@@ -134,7 +134,7 @@ def init_linear(w: Tensor):
     bound = (3 ** 0.5) * std
     return w.uniform_(-bound, bound)
 
-def quasicrystal_transform(x, strength=0.1):
+def quasicrystal_transform(x, strength=0.3):
     """Dead simple but effective"""
     phi = 1.618
     # Mix with golden-ratio shifted version
@@ -185,7 +185,6 @@ class CausalSelfAttention(nn.Module):
         q, k, v = F.linear(x, self.qkvo_w[:3].flatten(end_dim=1)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
-        q,k = quasicrystal_transform(q), quasicrystal_transform(k)
         v = norm(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
@@ -228,11 +227,11 @@ class Block(nn.Module):
             z = self.attn(x, ve, block_mask)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-            x = x + z
+            x = x + quasicrystal_transform(z)
         z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-        x = x + z
+        x = x + quasicrystal_transform(z)
         return x
 
 # -----------------------------------------------------------------------------
