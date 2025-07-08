@@ -246,7 +246,7 @@ class Block(nn.Module):
         z = self.mlp(norm(x))
         if not self.training:
             self.record[2].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
-        x = x + self.quasi_transform2(z)
+        x = x + self.quasi_transform1(z)
         return x
 
 # -----------------------------------------------------------------------------
