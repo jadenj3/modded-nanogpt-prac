@@ -276,38 +276,6 @@ class GPT(nn.Module):
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
-        # 1. Isolate the single row for the middle query block
-
-        # 2. Temporarily set print options to show the entire tensor
-        '''
-        torch.set_printoptions(profile="full")
-
-        # 1. Isolate the single row for the middle query block
-        middle_block_row = blockmask_any[NUM_BLOCKS // 2]
-
-        # 2. Use .nonzero() to find all True indices and .flatten() to make it a 1D list
-        true_indices = middle_block_row.nonzero().flatten()
-        document_blockmask_row =  document_blockmask_any[NUM_BLOCKS // 2]
-        doc_true_indices = document_blockmask_row.nonzero().flatten()
-
-
-        # 3. Print the result
-        
-        print0("\n--- Sliding window number of blocks ---")
-        print0(sliding_window_num_blocks)  # .tolist() converts it to a standard Python list
-        print0("---------------------------------------------------\n")
-        print0(f"\n Clamp function on the sliding window blocks:  {torch.clamp_max(full_kv_num_blocks, sliding_window_num_blocks - 1)}")
-        print0(f"Full kv num blocks: {full_kv_num_blocks}")
-        print0(f"Full kv indices:  {full_kv_indices}")'''
-        '''
-        print0("\n--- Indices of True Values for Middle Query Block ---")
-        list_indices = true_indices.tolist()
-        print0(list_indices)  # .tolist() converts it to a standard Python list
-        print0(f" length of true indices: {len(list_indices)}")
-        print0("---------------------------------------------------\n")
-        print0("\n--- Indices of True Values for Middle Query Block Doc mask---")
-        print0(doc_true_indices.tolist())  # .tolist() converts it to a standard Python list
-        print0("---------------------------------------------------\n")'''
 
         # 4. Reset print options back to default
         #torch.set_printoptions(profile="default")
