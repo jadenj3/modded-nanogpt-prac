@@ -333,7 +333,7 @@ class GPT(nn.Module):
 
         long_bm, short_bm, mid_bm, longest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
         #block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
-        block_masks = [mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
+        block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, long_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
         #block_masks = [long_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, short_bm, shorter_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, shorter_bm, short_bm, long_bm]
         #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
