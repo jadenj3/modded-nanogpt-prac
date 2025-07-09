@@ -368,7 +368,7 @@ class Hyperparameters:
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
     num_iterations = 450 # number of iterations to run
-    cooldown_frac = 0.7 # fraction of training spent cooling down the learning rate
+    cooldown_frac = 0.5 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -471,7 +471,7 @@ def get_window_size_blocks(step: int):
     # increase the block-wise sliding window size over training 128 -> 3456
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng;
     factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
-    window_size = next_multiple_of_n(4500 * factor, n=128)
+    window_size = next_multiple_of_n(3456 * factor, n=128)
     return get_window_size_blocks_helper(window_size)
 
 model: nn.Module = torch.compile(model, dynamic=False)
