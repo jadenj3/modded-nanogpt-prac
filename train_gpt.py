@@ -301,7 +301,7 @@ class GPT(nn.Module):
 
         long_bm, short_bm, mid_bm, longest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
         #block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
-        block_masks = [long_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, long_bm]
+        block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
         #block_masks = [long_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, short_bm, shorter_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, shorter_bm, short_bm, long_bm]
         #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
@@ -367,7 +367,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 525 # number of iterations to run
+    num_iterations = 450 # number of iterations to run
     cooldown_frac = 0.5 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -417,13 +417,8 @@ print0("="*100)
 #    Construct model and optimizer     #
 ########################################
 
-model: nn.Module = GPT(vocab_size=args.vocab_size, num_layers=12, num_heads=8, model_dim=1024,
+model: nn.Module = GPT(vocab_size=args.vocab_size, num_layers=16, num_heads=8, model_dim=1024,
                        max_seq_len=max(args.train_seq_len, args.val_seq_len)).cuda()
-
-# Print number of parameters
-total_params = sum(p.numel() for p in model.parameters())
-print0(f"Model parameters: {total_params:,}", console=True)
-
 for m in model.modules():
     if isinstance(m, nn.Embedding):
         m.bfloat16()
