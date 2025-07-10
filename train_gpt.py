@@ -319,7 +319,7 @@ class GPT(nn.Module):
             
             # Add sparse blocks if requested
             if add_sparsity:
-                sliding_window_mask = add_sparse_blocks(sliding_window_mask, sparsity_ratio=0.1)
+                sliding_window_mask = add_sparse_blocks(sliding_window_mask, sparsity_ratio=0.0)
             
             # Convert to the format expected by BlockMask.from_kv_blocks
             sparse_partial_kv_num_blocks, sparse_partial_kv_indices = dense_to_ordered(sliding_window_mask & ~blockmask_all)
