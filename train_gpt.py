@@ -247,7 +247,7 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.ones(num_layers, dtype=torch.bfloat16))
         #self.feature_weights = nn.Parameter(torch.ones(num_layers, model_dim, dtype=torch.bfloat16))
 
-    def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
+    def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor, sparse_attention: bool = True):
         BLOCK_SIZE = 128
         docs = (input_seq == 50256).cumsum(0)
 
@@ -260,6 +260,38 @@ class GPT(nn.Module):
             num_blocks = dense_blockmask.sum(dim=-1, dtype=torch.int32)
             indices = dense_blockmask.argsort(dim=-1, descending=False, stable=True).flip(-1).to(torch.int32)
             return num_blocks[None, None].contiguous(), indices[None, None].contiguous()
+
+        def add_sparse_blocks(base_mask: Tensor, sparsity_ratio: float = 0.1):
+            """Add sparse blocks from the same document but outside the sliding window."""
+            NUM_BLOCKS = base_mask.size(0)
+            sparse_mask = base_mask.clone()
+            
+            # Create a mask for blocks within the same document (document_blockmask_any)
+            # but outside the current sliding window
+            same_doc_mask = document_blockmask_any & causal_blockmask_any
+            outside_window_mask = same_doc_mask & ~base_mask
+            
+            # For each query block, add sparse blocks from outside the window
+            for q_block in range(NUM_BLOCKS):
+                if outside_window_mask[q_block].any():
+                    # Get candidate blocks outside the window but in same document
+                    candidates = torch.where(outside_window_mask[q_block])[0]
+                    
+                    if len(candidates) > 0:
+                        # Calculate how many sparse blocks to add (10% of window size)
+                        num_sparse = max(1, int(base_mask[q_block].sum().item() * sparsity_ratio))
+                        num_sparse = min(num_sparse, len(candidates))
+                        
+                        # Randomly select sparse blocks, favoring more recent ones
+                        # Weight selection towards blocks closer to the current window
+                        weights = torch.exp(-0.1 * (q_block - candidates).float())
+                        selected_indices = torch.multinomial(weights, num_sparse, replacement=False)
+                        selected_blocks = candidates[selected_indices]
+                        
+                        # Add selected sparse blocks to the mask
+                        sparse_mask[q_block, selected_blocks] = True
+            
+            return sparse_mask
 
         # manual block mask creation by @YouJiacheng
         assert len(input_seq) % BLOCK_SIZE == 0
@@ -279,17 +311,39 @@ class GPT(nn.Module):
 
         # 4. Reset print options back to default
         #torch.set_printoptions(profile="default")
-        def build_bm(window_size_blocks: Tensor) -> BlockMask:
+        def build_bm(window_size_blocks: Tensor, add_sparsity: bool = True) -> BlockMask:
+            # Create sliding window mask
+            sliding_window_mask = torch.zeros(NUM_BLOCKS, NUM_BLOCKS, dtype=torch.bool, device="cuda")
+            
+            for q_block in range(NUM_BLOCKS):
+                # Standard sliding window: attend to previous window_size_blocks
+                start_block = max(0, q_block - window_size_blocks.item() + 1)
+                end_block = q_block + 1
+                
+                # Apply document and causal constraints
+                for kv_block in range(start_block, end_block):
+                    if (causal_blockmask_any[q_block, kv_block] and 
+                        document_blockmask_any[q_block, kv_block]):
+                        sliding_window_mask[q_block, kv_block] = True
+            
+            # Add sparse blocks if requested
+            if add_sparsity:
+                sliding_window_mask = add_sparse_blocks(sliding_window_mask, sparsity_ratio=0.1)
+            
+            # Convert to the format expected by BlockMask.from_kv_blocks
+            sparse_partial_kv_num_blocks, sparse_partial_kv_indices = dense_to_ordered(sliding_window_mask & ~blockmask_all)
+            sparse_full_kv_num_blocks, sparse_full_kv_indices = dense_to_ordered(sliding_window_mask & blockmask_all)
+            
             return BlockMask.from_kv_blocks(
-                torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
-                partial_kv_indices,
-                torch.clamp_max(full_kv_num_blocks, window_size_blocks - 1),
-                full_kv_indices,
+                sparse_partial_kv_num_blocks,
+                sparse_partial_kv_indices,
+                sparse_full_kv_num_blocks,
+                sparse_full_kv_indices,
                 BLOCK_SIZE=BLOCK_SIZE,
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 7), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks*2)
+        return build_bm(sliding_window_num_blocks, sparse_attention), build_bm(sliding_window_num_blocks // 7, sparse_attention), build_bm(sliding_window_num_blocks // 2, sparse_attention), build_bm(sliding_window_num_blocks*2, sparse_attention)
 
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
@@ -299,7 +353,7 @@ class GPT(nn.Module):
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]] # visualize this to see whats going on
         assert len(ve) == len(self.blocks)
 
-        long_bm, short_bm, mid_bm, longest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
+        long_bm, short_bm, mid_bm, longest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks, sparse_attention=True) # try u-net bm
         #block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
         block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
         #block_masks = [long_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, short_bm, shorter_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, shorter_bm, short_bm, long_bm]
