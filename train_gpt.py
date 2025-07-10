@@ -27,7 +27,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-#seed_everything(99)
+seed_everything(5)
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
@@ -319,7 +319,7 @@ class GPT(nn.Module):
             
             # Add sparse blocks if requested
             if add_sparsity:
-                sliding_window_mask = add_sparse_blocks(sliding_window_mask, sparsity_ratio=0.0)
+                sliding_window_mask = add_sparse_blocks(sliding_window_mask, sparsity_ratio=0.2)
             
             # Convert to the format expected by BlockMask.from_kv_blocks
             sparse_partial_kv_num_blocks, sparse_partial_kv_indices = dense_to_ordered(sliding_window_mask & ~blockmask_all)
