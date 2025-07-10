@@ -15,10 +15,19 @@ torch.empty(1, device="cuda", requires_grad=True).backward() # prevents a bug on
 from torch import Tensor, nn
 import torch.nn.functional as F
 import torch.distributed as dist
+import random
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-torch._inductor.config.coordinate_descent_tuning = False # we have banned this flag for new records because it causes compilation to take 30min
-
+#torch._inductor.config.coordinate_descent_tuning = False # we have banned this flag for new records because it causes compilation to take 30min
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
+seed_everything(5)
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
