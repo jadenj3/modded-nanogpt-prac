@@ -247,6 +247,7 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.ones(num_layers, dtype=torch.bfloat16))
         #self.feature_weights = nn.Parameter(torch.ones(num_layers, model_dim, dtype=torch.bfloat16))
 
+    @torch.no_grad()
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor, sparse_attention: bool = True):
         BLOCK_SIZE = 128
         docs = (input_seq == 50256).cumsum(0)
@@ -263,33 +264,23 @@ class GPT(nn.Module):
 
         def add_sparse_blocks(base_mask: Tensor, sparsity_ratio: float = 0.1):
             """Add sparse blocks from the same document but outside the sliding window."""
-            NUM_BLOCKS = base_mask.size(0)
             sparse_mask = base_mask.clone()
             
-            # Create a mask for blocks within the same document (document_blockmask_any)
-            # but outside the current sliding window
+            # Create a mask for blocks within the same document but outside the current sliding window
             same_doc_mask = document_blockmask_any & causal_blockmask_any
             outside_window_mask = same_doc_mask & ~base_mask
             
-            # For each query block, add sparse blocks from outside the window
-            for q_block in range(NUM_BLOCKS):
-                if outside_window_mask[q_block].any():
-                    # Get candidate blocks outside the window but in same document
-                    candidates = torch.where(outside_window_mask[q_block])[0]
-                    
-                    if len(candidates) > 0:
-                        # Calculate how many sparse blocks to add (10% of window size)
-                        num_sparse = max(1, int(base_mask[q_block].sum().item() * sparsity_ratio))
-                        num_sparse = min(num_sparse, len(candidates))
-                        
-                        # Randomly select sparse blocks, favoring more recent ones
-                        # Weight selection towards blocks closer to the current window
-                        weights = torch.exp(-0.1 * (q_block - candidates).float())
-                        selected_indices = torch.multinomial(weights, num_sparse, replacement=False)
-                        selected_blocks = candidates[selected_indices]
-                        
-                        # Add selected sparse blocks to the mask
-                        sparse_mask[q_block, selected_blocks] = True
+            # Simple approach: for each query block, probabilistically add some outside blocks
+            # Use a fixed probability to avoid dynamic tensor operations
+            if outside_window_mask.any():
+                # Create a random mask for sparse selection
+                random_mask = torch.rand_like(outside_window_mask.float()) < sparsity_ratio
+                
+                # Apply random sparse selection to blocks outside the window
+                sparse_additions = outside_window_mask & random_mask
+                
+                # Add sparse blocks to the mask
+                sparse_mask = sparse_mask | sparse_additions
             
             return sparse_mask
 
@@ -312,19 +303,19 @@ class GPT(nn.Module):
         # 4. Reset print options back to default
         #torch.set_printoptions(profile="default")
         def build_bm(window_size_blocks: Tensor, add_sparsity: bool = True) -> BlockMask:
-            # Create sliding window mask
-            sliding_window_mask = torch.zeros(NUM_BLOCKS, NUM_BLOCKS, dtype=torch.bool, device="cuda")
+            # Create sliding window mask using vectorized operations to avoid .item()
+            window_size = window_size_blocks.int()
             
-            for q_block in range(NUM_BLOCKS):
-                # Standard sliding window: attend to previous window_size_blocks
-                start_block = max(0, q_block - window_size_blocks.item() + 1)
-                end_block = q_block + 1
-                
-                # Apply document and causal constraints
-                for kv_block in range(start_block, end_block):
-                    if (causal_blockmask_any[q_block, kv_block] and 
-                        document_blockmask_any[q_block, kv_block]):
-                        sliding_window_mask[q_block, kv_block] = True
+            # Create range tensors for vectorized operations
+            q_blocks = torch.arange(NUM_BLOCKS, device="cuda")[:, None]
+            kv_blocks = torch.arange(NUM_BLOCKS, device="cuda")[None, :]
+            
+            # Vectorized sliding window computation
+            # Each query block attends to [q_block - window_size + 1, q_block]
+            sliding_window_mask = (kv_blocks >= torch.clamp(q_blocks - window_size + 1, min=0)) & (kv_blocks <= q_blocks)
+            
+            # Apply document and causal constraints
+            sliding_window_mask = sliding_window_mask & causal_blockmask_any & document_blockmask_any
             
             # Add sparse blocks if requested
             if add_sparsity:
