@@ -59,6 +59,7 @@ def zeropower_via_newtonschulz5(G: Tensor) -> Tensor:
         A = X @ X.mT
         B = b * A + c * A @ A # quintic computation strategy adapted from suggestion by @jxbz, @leloykun, and @YouJiacheng
         X = a * X + B @ X
+        X = X @ X.mT
 
     if G.size(-2) > G.size(-1):
         X = X.mT
