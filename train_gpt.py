@@ -305,7 +305,8 @@ class GPT(nn.Module):
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         for i in range(len(ve)):
             ve[i] = norm(ve[i])
-            ve[i] = self.embed_blocks[i](ve[i], None, ve[i], block_masks[i])
+            ve[i] = self.embed_blocks[i](ve[i][None], None, ve[i][None], block_masks[i])  # Add [None] for batch dim
+            ve[i] = ve[i].squeeze(0)  # Remove batch dim after processing
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]  # visualize this to see whats going on
         assert len(ve) == len(self.blocks)
