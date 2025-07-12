@@ -296,7 +296,7 @@ class GPT(nn.Module):
 
         #ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        ve_block = torch.stack([value_embed(input_seq) for value_embed in self.value_embeds]).mean(dim=0)
+        ve_block = sum(value_embed(input_seq) for value_embed in self.value_embeds)
         ve = [ve_block, ve_block, ve_block] + [None] * (len(self.blocks) - 6) + [ve_block, ve_block, ve_block]
         #ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]] # visualize this to see whats going on
         assert len(ve) == len(self.blocks)
