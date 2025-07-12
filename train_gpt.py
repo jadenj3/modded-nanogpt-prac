@@ -239,7 +239,7 @@ class GPT(nn.Module):
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
         self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
-        self.embed_blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(3)])
+        self.embed_blocks = nn.ModuleList([MLP(model_dim) for i in range(3)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         self.lm_head_w = nn.Parameter(torch.zeros(next_multiple_of_n(vocab_size, n=128), model_dim))
@@ -305,7 +305,7 @@ class GPT(nn.Module):
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         for i in range(len(ve)):
             ve[i] = norm(ve[i])
-            ve[i] = self.embed_blocks[i](ve[i][None], None, ve[i][None], block_masks[i])  # Add [None] for batch dim
+            ve[i] = self.embed_blocks[i](ve[i][None])  # Add [None] for batch dim
             ve[i] = ve[i].squeeze(0)  # Remove batch dim after processing
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]  # visualize this to see whats going on
