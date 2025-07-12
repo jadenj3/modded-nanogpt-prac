@@ -430,10 +430,17 @@ for param in model.parameters():
 
 # collect the parameters to optimize
 hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
-#hidden_matrix_params.append(model.feature_weights)
 embed_params = [*model.embed.parameters()]
 value_embeds_params = [*model.value_embeds.parameters()]
-scalar_params = [p for p in model.parameters() if p.ndim < 2]
+
+# Add embed_blocks parameters to the appropriate collections
+embed_blocks_matrix_params = [p for p in model.embed_blocks.parameters() if p.ndim >= 2]
+hidden_matrix_params.extend(sorted(embed_blocks_matrix_params, key=lambda x: x.size(), reverse=True))
+
+embed_blocks_scalar_params = [p for p in model.embed_blocks.parameters() if p.ndim < 2]
+scalar_params = [p for p in model.parameters() if p.ndim < 2 and p not in embed_blocks_scalar_params]
+scalar_params.extend(embed_blocks_scalar_params)
+
 head_params: list[nn.Parameter] = [model.lm_head_w]
 # sanity check
 params_collections = [hidden_matrix_params, embed_params, value_embeds_params, scalar_params, head_params]
