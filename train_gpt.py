@@ -430,21 +430,23 @@ for param in model.parameters():
 
 # collect the parameters to optimize
 hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
-embed_params = [*model.embed.parameters()]
-value_embeds_params = [*model.value_embeds.parameters()]
 
-# Add embed_blocks parameters - handle them separately
+# Add embed_blocks parameters to hidden_matrix_params
 embed_blocks_hidden_params = sorted((p for p in model.embed_blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
 hidden_matrix_params.extend(embed_blocks_hidden_params)
 
-# Get all scalar params, then filter out the ones already included
-all_scalar_params = [p for p in model.parameters() if p.ndim < 2]
-# Create a set of parameter ids to avoid tensor comparison
-embed_blocks_params_ids = {id(p) for p in model.embed_blocks.parameters()}
-blocks_params_ids = {id(p) for p in model.blocks.parameters()}
-scalar_params = [p for p in all_scalar_params if id(p) not in embed_blocks_params_ids and id(p) not in blocks_params_ids]
+embed_params = [*model.embed.parameters()]
+value_embeds_params = [*model.value_embeds.parameters()]
+
+# Collect ALL scalar parameters from the entire model
+scalar_params = [p for p in model.parameters() if p.ndim < 2]
 
 head_params: list[nn.Parameter] = [model.lm_head_w]
+
+# sanity check
+params_collections = [hidden_matrix_params, embed_params, value_embeds_params, scalar_params, head_params]
+optimized_parameters_set = {p for params in params_collections for p in params}
+assert optimized_parameters_set == {*model.parameters()}
 # sanity check
 params_collections = [hidden_matrix_params, embed_params, value_embeds_params, scalar_params, head_params]
 optimized_parameters_set = {p for params in params_collections for p in params}
