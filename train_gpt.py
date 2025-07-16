@@ -27,7 +27,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-seed_everything(5)
+#seed_everything(5)
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
@@ -59,7 +59,6 @@ def zeropower_via_newtonschulz5(G: Tensor) -> Tensor:
         A = X @ X.mT
         B = b * A + c * A @ A # quintic computation strategy adapted from suggestion by @jxbz, @leloykun, and @YouJiacheng
         X = a * X + B @ X
-        X = X @ X.mT
 
     if G.size(-2) > G.size(-1):
         X = X.mT
@@ -238,9 +237,8 @@ class GPT(nn.Module):
         self.embed = nn.Embedding(vocab_size, model_dim)
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(1)])
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
-        self.embed_blocks = nn.ModuleList([MLP(model_dim) for i in range(1)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         self.lm_head_w = nn.Parameter(torch.zeros(next_multiple_of_n(vocab_size, n=128), model_dim))
@@ -296,6 +294,11 @@ class GPT(nn.Module):
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
+        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+        # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
+        ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]] # visualize this to see whats going on
+        assert len(ve) == len(self.blocks)
+
         long_bm, short_bm, mid_bm, longest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
         #block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
         block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
@@ -303,14 +306,6 @@ class GPT(nn.Module):
         #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
         assert len(block_masks) == len(self.blocks)
-        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
-        for i in range(len(ve)):
-            ve[i] = norm(ve[i])
-            ve[i] = self.embed_blocks[i](ve[i][None])  # Add [None] for batch dim
-            ve[i] = ve[i].squeeze(0)  # Remove batch dim after processing
-        # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        ve = [ve[0], ve[0], ve[0]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[0], ve[0]]  # visualize this to see whats going on
-        assert len(ve) == len(self.blocks)
         x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
         skip_connections = [] # maybe try different x0s?
         skip_map = {
@@ -432,23 +427,11 @@ for param in model.parameters():
 
 # collect the parameters to optimize
 hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
-
-# Add embed_blocks parameters to hidden_matrix_params
-embed_blocks_hidden_params = sorted((p for p in model.embed_blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
-hidden_matrix_params.extend(embed_blocks_hidden_params)
-
+#hidden_matrix_params.append(model.feature_weights)
 embed_params = [*model.embed.parameters()]
 value_embeds_params = [*model.value_embeds.parameters()]
-
-# Collect ALL scalar parameters from the entire model
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
-
 head_params: list[nn.Parameter] = [model.lm_head_w]
-
-# sanity check
-params_collections = [hidden_matrix_params, embed_params, value_embeds_params, scalar_params, head_params]
-optimized_parameters_set = {p for params in params_collections for p in params}
-assert optimized_parameters_set == {*model.parameters()}
 # sanity check
 params_collections = [hidden_matrix_params, embed_params, value_embeds_params, scalar_params, head_params]
 optimized_parameters_set = {p for params in params_collections for p in params}
