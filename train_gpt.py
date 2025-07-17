@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import random
+import math
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
@@ -247,9 +248,12 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.ones(num_layers, dtype=torch.bfloat16))
         #self.feature_weights = nn.Parameter(torch.ones(num_layers, model_dim, dtype=torch.bfloat16))
 
-    def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
+    def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks):
         BLOCK_SIZE = 128
         docs = (input_seq == 50256).cumsum(0)
+        second_factor = sliding_window_num_blocks[1]
+        sliding_window_num_blocks = sliding_window_num_blocks[0]
+
 
         def document_causal(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
@@ -289,9 +293,9 @@ class GPT(nn.Module):
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 7), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks*2)
+        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // second_factor), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks*2)
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
+    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks):
         assert input_seq.ndim == 1
 
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
@@ -300,8 +304,8 @@ class GPT(nn.Module):
         assert len(ve) == len(self.blocks)
 
         long_bm, short_bm, mid_bm, longest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
-        #block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
-        block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
+        block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
+        #block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
         #block_masks = [long_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, short_bm, shorter_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, shorter_bm, short_bm, long_bm]
         #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
                        #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
@@ -471,8 +475,9 @@ def get_window_size_blocks(step: int):
     # increase the block-wise sliding window size over training 128 -> 3456
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng;
     factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
+    second_factor = -28*x ** 3 + 42 * x ** 2 - 21*x+8
     window_size = next_multiple_of_n(3456 * factor, n=128)
-    return get_window_size_blocks_helper(window_size)
+    return [get_window_size_blocks_helper(window_size), math.ceil(second_factor)]
 
 model: nn.Module = torch.compile(model, dynamic=False)
 
