@@ -251,7 +251,7 @@ class GPT(nn.Module):
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks):
         BLOCK_SIZE = 128
         docs = (input_seq == 50256).cumsum(0)
-        second_factor = sliding_window_num_blocks[1]
+        second_blocks = sliding_window_num_blocks[1]
         sliding_window_num_blocks = sliding_window_num_blocks[0]
 
 
@@ -293,7 +293,7 @@ class GPT(nn.Module):
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // second_factor), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks*2)
+        return build_bm(sliding_window_num_blocks), build_bm(second_blocks), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks*2)
 
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks):
         assert input_seq.ndim == 1
@@ -475,9 +475,9 @@ def get_window_size_blocks(step: int):
     # increase the block-wise sliding window size over training 128 -> 3456
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng;
     factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
-    second_factor = -28*x ** 3 + 42 * x ** 2 - 21*x+8
     window_size = next_multiple_of_n(3456 * factor, n=128)
-    return [get_window_size_blocks_helper(window_size), math.ceil(second_factor)]
+    window_size_2 = next_multiple_of_n(3456 * factor*factor, n=128)
+    return [get_window_size_blocks_helper(window_size), window_size_2]
 
 model: nn.Module = torch.compile(model, dynamic=False)
 
