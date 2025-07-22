@@ -455,7 +455,7 @@ def get_lr(step: int):
         # Progress through cooldown phase (0 to 1)
         cooldown_progress = (x - (1 - args.cooldown_frac)) / args.cooldown_frac
         # Cosine annealing from 1.0 to 0.0
-        return 0.3 * (1 + math.cos(math.pi * cooldown_progress))
+        return 0.9 * (1 + math.cos(math.pi * cooldown_progress))
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
