@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import random
-import math
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
@@ -28,7 +27,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)  # Add this for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
-#seed_everything(5)
+seed_everything(12)
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
@@ -107,8 +106,6 @@ class Muon(torch.optim.Optimizer):
             momentum = torch._as_tensor_fullprec(group["momentum"])
             for base_i in range(len(params))[::self.world_size]:
                 p = params[min(base_i + self.rank, len(params) - 1)]
-                if p.grad is None:
-                    continue
                 state = self.state[p]
                 if len(state) == 0:
                     state["mantissa"] = torch.zeros_like(p, dtype=torch.uint16)
@@ -155,7 +152,7 @@ class Rotary(nn.Module):
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx, head_dim=128):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, head_dim=128):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
@@ -169,7 +166,6 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
-        self.layer_idx = layer_idx
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -206,7 +202,7 @@ class Block(nn.Module):
     def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
-        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len, layer_idx) if layer_idx != 7 else None
+        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
@@ -246,14 +242,11 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         self.skip_weights = nn.Parameter(torch.ones(num_layers, dtype=torch.bfloat16))
-        #self.feature_weights = nn.Parameter(torch.ones(num_layers, model_dim, dtype=torch.bfloat16))
+        #self.feature_weights = nn.Parameter(torch.ones(model_dim, dtype=torch.bfloat16))
 
-    def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks):
+    def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
         docs = (input_seq == 50256).cumsum(0)
-        second_blocks = sliding_window_num_blocks[1]
-        sliding_window_num_blocks = sliding_window_num_blocks[0]
-
 
         def document_causal(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
@@ -275,14 +268,10 @@ class GPT(nn.Module):
         docs_high = docs.view(-1, BLOCK_SIZE)[:, -1].contiguous()
         document_blockmask_any = (docs_low[:, None] <= docs_high) & (docs_high[:, None] >= docs_low)
         document_blockmask_all = (docs_low[:, None] == docs_high) & (docs_high[:, None] == docs_low)
-
         blockmask_any = causal_blockmask_any & document_blockmask_any
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
-
-        # 4. Reset print options back to default
-        #torch.set_printoptions(profile="default")
         def build_bm(window_size_blocks: Tensor) -> BlockMask:
             return BlockMask.from_kv_blocks(
                 torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
@@ -293,25 +282,23 @@ class GPT(nn.Module):
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        return build_bm(sliding_window_num_blocks), build_bm(second_blocks), build_bm(sliding_window_num_blocks // 2), build_bm(sliding_window_num_blocks*2)
+        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks):
+    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]] # visualize this to see whats going on, also see what the lambdas are doing later, why doesn't RMS norm help here?
+        ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
         assert len(ve) == len(self.blocks)
 
-        long_bm, short_bm, mid_bm, longest_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks) # try u-net bm
+        long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
         block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
-        #block_masks = [long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, mid_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm]
-        #block_masks = [long_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, short_bm, shorter_bm, short_bm, shorter_bm, short_bm, long_bm, short_bm, shorter_bm, short_bm, long_bm]
-        #block_masks = [short_bm, short_bm, short_bm, short_bm, long_bm, long_bm, long_bm, long_bm, long_bm, long_bm,
-                       #long_bm, long_bm, short_bm, short_bm, short_bm, short_bm]
         assert len(block_masks) == len(self.blocks)
-        x = x0 = norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
-        skip_connections = [] # maybe try different x0s?
+
+        x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
+
+        skip_connections = []
         skip_map = {
             9: 6,
             10: 4,
@@ -319,7 +306,7 @@ class GPT(nn.Module):
         }
         for i in range(len(self.blocks)):
             if i in skip_map:
-                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
+                x = x + self.skip_weights[skip_map[i]] *skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
             skip_connections.append(x)
 
@@ -371,8 +358,8 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 6250 # number of iterations to run
-    cooldown_frac = 0.5 # fraction of training spent cooling down the learning rate
+    num_iterations = 450 # number of iterations to run
+    cooldown_frac = 0.7 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -431,7 +418,6 @@ for param in model.parameters():
 
 # collect the parameters to optimize
 hidden_matrix_params = sorted((p for p in model.blocks.parameters() if p.ndim >= 2), key=lambda x: x.size(), reverse=True)
-#hidden_matrix_params.append(model.feature_weights)
 embed_params = [*model.embed.parameters()]
 value_embeds_params = [*model.value_embeds.parameters()]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
@@ -476,8 +462,7 @@ def get_window_size_blocks(step: int):
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng;
     factor = 4 * x ** 3 - 6 * x ** 2 + 3 * x
     window_size = next_multiple_of_n(3456 * factor, n=128)
-    window_size_2 = next_multiple_of_n(3456 * factor*factor, n=128)
-    return [get_window_size_blocks_helper(window_size), window_size_2]
+    return get_window_size_blocks_helper(window_size)
 
 model: nn.Module = torch.compile(model, dynamic=False)
 
@@ -492,8 +477,7 @@ for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
-        if param.grad is not None:
-            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -536,7 +520,6 @@ for step in range(train_steps + 1):
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
-        #print0(f"feature_weights: {model.feature_weights.data}", console=True)
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -554,8 +537,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2futures = {
-        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params if
-              p.grad is not None]
+        opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
