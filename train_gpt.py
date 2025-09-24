@@ -560,8 +560,7 @@ for step in range(train_steps + 1):
 
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
-    for i in range(3):
-        loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
+    loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
     loss.backward()
     train_prev_state.zero_()
     opt2futures = {
