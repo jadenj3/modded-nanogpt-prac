@@ -539,6 +539,7 @@ for step in range(train_steps + 1):
                 for i in range(3):
                     loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
                 val_loss += loss
+                val_prev_state.zero_()
             #print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
         val_loss /= val_steps
         del val_loader
@@ -562,6 +563,7 @@ for step in range(train_steps + 1):
     for i in range(3):
         loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
         loss.backward()
+        train_prev_state.zero_()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
         for opt, params in opt2params.items()
