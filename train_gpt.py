@@ -243,7 +243,7 @@ class GPT(nn.Module):
         assert num_layers % 2 == 0
         self.skip_weights = nn.Parameter(torch.ones(num_layers, dtype=torch.bfloat16))
         #self.feature_weights = nn.Parameter(torch.ones(model_dim, dtype=torch.bfloat16))
-        self.prev_lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
+        #self.prev_lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -299,7 +299,7 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
         prev_input = prev_input.to(device=x.device, dtype=x.dtype)
-        x = self.prev_lambdas[0]*x + self.prev_lambdas[1]*prev_input
+        x = x + prev_input
 
         skip_connections = []
         skip_map = {
@@ -538,7 +538,7 @@ for step in range(train_steps + 1):
                 inputs, targets = next(val_loader)
                 loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
                 val_loss += loss
-            print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
+            #print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
