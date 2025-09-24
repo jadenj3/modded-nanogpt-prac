@@ -301,9 +301,12 @@ class GPT(nn.Module):
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-        docs = (input_seq == EOD_TOKEN).cumsum(0)
-        carry_mask = (docs == docs[-1]).view(1, -1, 1).to(device=x.device, dtype=x.dtype)
-        prev_input = prev_input.to(device=x.device, dtype=x.dtype) * carry_mask
+        eod_positions = (input_seq == EOD_TOKEN).nonzero(as_tuple=True)[0]
+        prev_input = prev_input.to(device=x.device, dtype=x.dtype)
+        if eod_positions.numel() > 0:
+            cutoff = eod_positions[-1].item() + 1
+            prev_input = prev_input.clone()
+            prev_input[:, :cutoff] = 0
         x = x + prev_input
 
         skip_connections = []
@@ -322,7 +325,11 @@ class GPT(nn.Module):
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
-        carry_state = x.detach() * carry_mask
+        carry_state = x.detach()
+        if eod_positions.numel() > 0:
+            cutoff = eod_positions[-1].item() + 1
+            carry_state = carry_state.clone()
+            carry_state[:, :cutoff] = 0
         return loss, carry_state
 
 # -----------------------------------------------------------------------------
