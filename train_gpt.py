@@ -296,7 +296,7 @@ class GPT(nn.Module):
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
         block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
         assert len(block_masks) == len(self.blocks)
-        prev_input = prev_input.to(device=x.device, dtype=x.dtype)
+        prev_input = prev_input.to(device=input_seq.device, dtype=input_seq.dtype)
         x = x0 = norm(self.embed(input_seq)[None]+ prev_input) # use of norm here by @Grad62304977
 
         skip_connections = []
