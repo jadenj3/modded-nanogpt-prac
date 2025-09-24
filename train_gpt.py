@@ -174,6 +174,7 @@ class CausalSelfAttention(nn.Module):
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
+        prev_input = prev_input.view(B, T, self.num_heads, self.head_dim)
         v = v + prev_input
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
@@ -538,7 +539,7 @@ for step in range(train_steps + 1):
                 inputs, targets = next(val_loader)
                 loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
                 val_loss += loss
-                val_prev_state.zero_()
+                #val_prev_state.zero_()
             #print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
         val_loss /= val_steps
         del val_loader
@@ -561,7 +562,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
     loss.backward()
-    train_prev_state.zero_()
+    #train_prev_state.zero_()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
         for opt, params in opt2params.items()
