@@ -167,16 +167,12 @@ class CausalSelfAttention(nn.Module):
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12 #test
 
-    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, prev_input: Tensor):
+    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = F.linear(x, self.qkvo_w[:3].flatten(end_dim=1)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
-        #carry = prev_input.to(device=x.device, dtype=v.dtype).view_as(v)
-        #q = q + carry
-        #k = k + carry
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
-        #v = v + carry
         v = norm(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
@@ -211,12 +207,12 @@ class Block(nn.Module):
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
         self.record = nn.Buffer(torch.tensor([0.0, 0.0, 0.0]))
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, prev_input : Tensor):
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if not self.training:
             self.record[0].lerp_(torch.square(x).mean(dtype=torch.float32), 0.5)
         if self.attn is not None:
-            z = self.attn(x, ve, block_mask, prev_input)
+            z = self.attn(x, ve, block_mask)
             if not self.training:
                 self.record[1].lerp_(torch.square(z).mean(dtype=torch.float32), 0.5)
             x = x + z
@@ -303,6 +299,7 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
         prev_input = prev_input.to(device=x.device, dtype=x.dtype)
+        x = x + prev_input
 
         skip_connections = []
         skip_map = {
@@ -310,15 +307,10 @@ class GPT(nn.Module):
             10: 4,
             11: 2,
         }
-        drop_idx = torch.randint(len(self.blocks), (), device=x.device)  # or pass this in
-        drop_mask = 1 - F.one_hot(drop_idx, num_classes=len(self.blocks)).to(x.dtype)  # shape [num_blocks]
-
-        for i, block in enumerate(self.blocks):
+        for i in range(len(self.blocks)):
             if i in skip_map:
-                x = x + self.skip_weights[skip_map[i]] * skip_connections[skip_map[i]]
-            y = block(x, ve[i], x0, block_masks[i], prev_input)
-            keep = drop_mask[i].view(1, 1, 1)  # broadcast
-            x = keep * y + (1 - keep) * x  # if dropped, carry old x forward
+                x = x + self.skip_weights[skip_map[i]] *skip_connections[skip_map[i]]
+            x = self.blocks[i](x, ve[i], x0, block_masks[i])
             skip_connections.append(x)
 
         x = norm(x)
@@ -546,7 +538,7 @@ for step in range(train_steps + 1):
                 inputs, targets = next(val_loader)
                 loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
                 val_loss += loss
-                #val_prev_state.zero_()
+                val_prev_state.zero_()
             #print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
         val_loss /= val_steps
         del val_loader
@@ -569,7 +561,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
     loss.backward()
-    #train_prev_state.zero_()
+    train_prev_state.zero_()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
         for opt, params in opt2params.items()
