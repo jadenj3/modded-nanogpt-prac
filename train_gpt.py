@@ -524,8 +524,6 @@ for step in range(train_steps + 1):
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
                 loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
-                print(f"prev_state shape {val_prev_state.shape}")
-                print(f"prev_state mean {val_prev_state.mean()}")
                 val_loss += loss
         val_loss /= val_steps
         del val_loader
