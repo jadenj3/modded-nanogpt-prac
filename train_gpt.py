@@ -304,9 +304,9 @@ class GPT(nn.Module):
         eod_positions = (input_seq == EOD_TOKEN).nonzero(as_tuple=True)[0]
         prev_input = prev_input.to(device=x.device, dtype=x.dtype)
         if eod_positions.numel() > 0:
-            cutoff = eod_positions[-1].item() + 1
-            prev_input = prev_input.clone()
-            prev_input[:, :cutoff] = 0
+            prefix_mask = (torch.arange(prev_input.size(1), device=prev_input.device, dtype=eod_positions.dtype)
+                           <= eod_positions[-1]).view(1, -1, 1)
+            prev_input = prev_input.clone().masked_fill(prefix_mask, 0)
         x = x + prev_input
 
         skip_connections = []
@@ -327,9 +327,9 @@ class GPT(nn.Module):
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
         carry_state = x.detach()
         if eod_positions.numel() > 0:
-            cutoff = eod_positions[-1].item() + 1
-            carry_state = carry_state.clone()
-            carry_state[:, :cutoff] = 0
+            prefix_mask = (torch.arange(carry_state.size(1), device=carry_state.device, dtype=eod_positions.dtype)
+                           <= eod_positions[-1]).view(1, -1, 1)
+            carry_state = carry_state.clone().masked_fill(prefix_mask, 0)
         return loss, carry_state
 
 # -----------------------------------------------------------------------------
