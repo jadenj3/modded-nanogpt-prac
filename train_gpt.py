@@ -312,7 +312,7 @@ class GPT(nn.Module):
         }
         for i in range(len(self.blocks)):
             if i in skip_map:
-                x = x + self.skip_weights[skip_map[i]] *skip_connections[skip_map[i]] + prev_input
+                x = x + self.skip_weights[skip_map[i]] *skip_connections[skip_map[i]]
             x = self.blocks[i](x, ve[i], x0, block_masks[i], prev_input)
             skip_connections.append(x)
 
