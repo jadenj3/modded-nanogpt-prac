@@ -225,9 +225,6 @@ class Block(nn.Module):
 # -----------------------------------------------------------------------------
 # The main model
 
-EOD_TOKEN = 50256
-
-
 def next_multiple_of_n(v: float | int, *, n: int):
     return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
 
@@ -302,11 +299,6 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
         prev_input = prev_input.to(device=x.device, dtype=x.dtype)
-        eod_mask = (input_seq == EOD_TOKEN).to(dtype=torch.int32)
-        # Mark positions belonging to completed documents (any EoD to their right)
-        suffix_cumsum = torch.cumsum(torch.flip(eod_mask, dims=(0,)), dim=0)
-        prefix_mask = torch.flip(suffix_cumsum, dims=(0,)).view(1, -1, 1) > 0
-        prev_input = prev_input.clone().masked_fill(prefix_mask, 0)
         x = x + prev_input
 
         skip_connections = []
@@ -325,9 +317,7 @@ class GPT(nn.Module):
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
-        carry_state = x.detach()
-        carry_state = carry_state.clone().masked_fill(prefix_mask, 0)
-        return loss, carry_state
+        return loss, x.detach()
 
 # -----------------------------------------------------------------------------
 # Our own simple Distributed Data Loader
