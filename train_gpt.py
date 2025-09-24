@@ -225,6 +225,9 @@ class Block(nn.Module):
 # -----------------------------------------------------------------------------
 # The main model
 
+EOD_TOKEN = 50256
+
+
 def next_multiple_of_n(v: float | int, *, n: int):
     return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
 
@@ -298,7 +301,9 @@ class GPT(nn.Module):
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-        prev_input = prev_input.to(device=x.device, dtype=x.dtype)
+        docs = (input_seq == EOD_TOKEN).cumsum(0)
+        carry_mask = (docs == docs[-1]).view(1, -1, 1).to(device=x.device, dtype=x.dtype)
+        prev_input = prev_input.to(device=x.device, dtype=x.dtype) * carry_mask
         x = x + prev_input
 
         skip_connections = []
@@ -317,7 +322,8 @@ class GPT(nn.Module):
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
-        return loss, x.detach()
+        carry_state = x.detach() * carry_mask
+        return loss, carry_state
 
 # -----------------------------------------------------------------------------
 # Our own simple Distributed Data Loader
