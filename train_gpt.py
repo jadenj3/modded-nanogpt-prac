@@ -536,8 +536,7 @@ for step in range(train_steps + 1):
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
-                for i in range(3):
-                    loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
+                loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
                 val_loss += loss
                 val_prev_state.zero_()
             #print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
