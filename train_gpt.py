@@ -298,7 +298,10 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
         if prev_input is None:
-            prev_input = torch.zeros_like(x)  # placeholder for future residual usage
+            prev_input = torch.zeros_like(x)
+        else:
+            prev_input = prev_input.to(device=x.device, dtype=x.dtype)
+        x = x + prev_input
 
         skip_connections = []
         skip_map = {
@@ -316,7 +319,7 @@ class GPT(nn.Module):
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
-        return loss
+        return loss, x.detach()
 
 # -----------------------------------------------------------------------------
 # Our own simple Distributed Data Loader
@@ -477,7 +480,8 @@ warmup_steps = 10
 initial_state = copy.deepcopy(dict(model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers]))
 for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
-    model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
+    warmup_loss, _ = model(inputs.to(torch.int32), targets, get_window_size_blocks(0), None)
+    warmup_loss.backward()
     for param in model.parameters():
         dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
@@ -500,6 +504,7 @@ torch.cuda.synchronize()
 t0 = time.perf_counter()
 # begin training
 train_steps = args.num_iterations
+train_prev_state: Tensor | None = None
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
 
@@ -514,10 +519,12 @@ for step in range(train_steps + 1):
         val_steps = args.val_tokens // val_batch_size
         val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
         val_loss = 0
+        val_prev_state: Tensor | None = None
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
-                val_loss += model(inputs, targets, get_window_size_blocks(step))
+                loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
+                val_loss += loss
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
@@ -537,7 +544,8 @@ for step in range(train_steps + 1):
 
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
-    model(inputs, targets, get_window_size_blocks(step)).backward()
+    loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
+    loss.backward()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
         for opt, params in opt2params.items()
