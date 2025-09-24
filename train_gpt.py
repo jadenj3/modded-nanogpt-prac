@@ -538,6 +538,8 @@ for step in range(train_steps + 1):
                 inputs, targets = next(val_loader)
                 loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
                 val_loss += loss
+            val_prev_state.zero_()
+            train_prev_state.zero_()
             #print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
         val_loss /= val_steps
         del val_loader
