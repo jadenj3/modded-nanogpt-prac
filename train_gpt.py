@@ -310,11 +310,13 @@ class GPT(nn.Module):
             10: 4,
             11: 2,
         }
+        idx = random.randrange(len(self.blocks))
         for i in range(len(self.blocks)):
-            if i in skip_map:
-                x = x + self.skip_weights[skip_map[i]] *skip_connections[skip_map[i]]
-            x = self.blocks[i](x, ve[i], x0, block_masks[i], prev_input)
-            skip_connections.append(x)
+            if i != idx:
+                if i in skip_map:
+                    x = x + self.skip_weights[skip_map[i]] *skip_connections[skip_map[i]]
+                x = self.blocks[i](x, ve[i], x0, block_masks[i], prev_input)
+                skip_connections.append(x)
 
         x = norm(x)
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
