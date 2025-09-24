@@ -165,7 +165,7 @@ class CausalSelfAttention(nn.Module):
         self.rotary = Rotary(head_dim, max_seq_len)
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
-        self.attn_scale = 0.12 #test
+        self.attn_scale = 0.12
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -284,7 +284,7 @@ class GPT(nn.Module):
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, prev_input: Tensor):
+    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
@@ -297,8 +297,6 @@ class GPT(nn.Module):
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-        prev_input = prev_input.to(device=x.device, dtype=x.dtype)
-        x = x + prev_input
 
         skip_connections = []
         skip_map = {
@@ -316,7 +314,7 @@ class GPT(nn.Module):
         logits: Tensor = F.linear(x, self.lm_head_w.type_as(x)).float()
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
-        return loss, x.detach()
+        return loss
 
 # -----------------------------------------------------------------------------
 # Our own simple Distributed Data Loader
@@ -360,7 +358,7 @@ class Hyperparameters:
     train_seq_len = 64*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 450 # number of iterations to run
+    num_iterations = 900 # number of iterations to run
     cooldown_frac = 0.7 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -475,17 +473,9 @@ model: nn.Module = torch.compile(model, dynamic=False)
 # Warmup the training kernels, then re-initialize the state so we aren't cheating
 warmup_steps = 10
 initial_state = copy.deepcopy(dict(model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers]))
-warmup_prev_state = torch.zeros(
-    (1, args.train_seq_len, model.embed.weight.size(1)),
-    dtype=model.embed.weight.dtype,
-    device=device,
-)
 for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
-    warmup_loss, warmup_prev_state = model(
-        inputs.to(torch.int32), targets, get_window_size_blocks(0), warmup_prev_state
-    )
-    warmup_loss.backward()
+    model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
     for param in model.parameters():
         dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
     for opt in optimizers:
@@ -508,11 +498,6 @@ torch.cuda.synchronize()
 t0 = time.perf_counter()
 # begin training
 train_steps = args.num_iterations
-train_prev_state = torch.zeros(
-    (1, args.train_seq_len, model.embed.weight.size(1)),
-    dtype=model.embed.weight.dtype,
-    device=device,
-)
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
 
@@ -527,16 +512,10 @@ for step in range(train_steps + 1):
         val_steps = args.val_tokens // val_batch_size
         val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
         val_loss = 0
-        val_prev_state = torch.zeros(
-            (1, args.val_seq_len, model.embed.weight.size(1)),
-            dtype=model.embed.weight.dtype,
-            device=device,
-        )
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
-                loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
-                val_loss += loss
+                val_loss += model(inputs, targets, get_window_size_blocks(step))
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
@@ -556,8 +535,7 @@ for step in range(train_steps + 1):
 
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
-    loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
-    loss.backward()
+    model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
         for opt, params in opt2params.items()
