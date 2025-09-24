@@ -536,7 +536,8 @@ for step in range(train_steps + 1):
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
-                loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
+                for i in range(3):
+                    loss, val_prev_state = model(inputs, targets, get_window_size_blocks(step), val_prev_state)
                 val_loss += loss
             #print0(f"prev_lambdas: {model.prev_lambdas.detach().cpu().tolist()}")
         val_loss /= val_steps
@@ -558,8 +559,9 @@ for step in range(train_steps + 1):
 
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
-    loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
-    loss.backward()
+    for i in range(3):
+        loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
+        loss.backward()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
         for opt, params in opt2params.items()
