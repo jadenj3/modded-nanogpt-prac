@@ -562,7 +562,7 @@ for step in range(train_steps + 1):
     inputs, targets = next(train_loader)
     for i in range(3):
         loss, train_prev_state = model(inputs, targets, get_window_size_blocks(step), train_prev_state)
-        loss.backward()
+    loss.backward()
     train_prev_state.zero_()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
