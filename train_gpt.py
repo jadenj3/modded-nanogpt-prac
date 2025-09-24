@@ -173,9 +173,10 @@ class CausalSelfAttention(nn.Module):
         q, k, v = F.linear(x, self.qkvo_w[:3].flatten(end_dim=1)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
         carry = prev_input.to(device=x.device, dtype=v.dtype).view_as(v)
         #q = q + carry
+        k = k + carry
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
-        v = v + carry
+        #v = v + carry
         v = norm(v)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
