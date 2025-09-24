@@ -284,7 +284,7 @@ class GPT(nn.Module):
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, prev_input: Tensor | None = None):
+    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, prev_input: Tensor):
         assert input_seq.ndim == 1
 
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
@@ -297,10 +297,7 @@ class GPT(nn.Module):
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-        if prev_input is None:
-            prev_input = torch.zeros_like(x)
-        else:
-            prev_input = prev_input.to(device=x.device, dtype=x.dtype)
+        prev_input = prev_input.to(device=x.device, dtype=x.dtype)
         x = x + prev_input
 
         skip_connections = []
@@ -478,9 +475,16 @@ model: nn.Module = torch.compile(model, dynamic=False)
 # Warmup the training kernels, then re-initialize the state so we aren't cheating
 warmup_steps = 10
 initial_state = copy.deepcopy(dict(model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers]))
+warmup_prev_state = torch.zeros(
+    (1, args.train_seq_len, model.embed.weight.size(1)),
+    dtype=model.embed.weight.dtype,
+    device=device,
+)
 for _ in range(warmup_steps):
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
-    warmup_loss, _ = model(inputs.to(torch.int32), targets, get_window_size_blocks(0), None)
+    warmup_loss, warmup_prev_state = model(
+        inputs.to(torch.int32), targets, get_window_size_blocks(0), warmup_prev_state
+    )
     warmup_loss.backward()
     for param in model.parameters():
         dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
@@ -504,7 +508,11 @@ torch.cuda.synchronize()
 t0 = time.perf_counter()
 # begin training
 train_steps = args.num_iterations
-train_prev_state: Tensor | None = None
+train_prev_state = torch.zeros(
+    (1, args.train_seq_len, model.embed.weight.size(1)),
+    dtype=model.embed.weight.dtype,
+    device=device,
+)
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
 
@@ -519,7 +527,11 @@ for step in range(train_steps + 1):
         val_steps = args.val_tokens // val_batch_size
         val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
         val_loss = 0
-        val_prev_state: Tensor | None = None
+        val_prev_state = torch.zeros(
+            (1, args.val_seq_len, model.embed.weight.size(1)),
+            dtype=model.embed.weight.dtype,
+            device=device,
+        )
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
