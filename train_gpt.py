@@ -301,12 +301,12 @@ class GPT(nn.Module):
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
-        eod_positions = (input_seq == EOD_TOKEN).nonzero(as_tuple=True)[0]
         prev_input = prev_input.to(device=x.device, dtype=x.dtype)
-        if eod_positions.numel() > 0:
-            prefix_mask = (torch.arange(prev_input.size(1), device=prev_input.device, dtype=eod_positions.dtype)
-                           <= eod_positions[-1]).view(1, -1, 1)
-            prev_input = prev_input.clone().masked_fill(prefix_mask, 0)
+        eod_mask = (input_seq == EOD_TOKEN).to(dtype=torch.int32)
+        # Mark positions belonging to completed documents (any EoD to their right)
+        suffix_cumsum = torch.cumsum(torch.flip(eod_mask, dims=(0,)), dim=0)
+        prefix_mask = torch.flip(suffix_cumsum, dims=(0,)).view(1, -1, 1) > 0
+        prev_input = prev_input.clone().masked_fill(prefix_mask, 0)
         x = x + prev_input
 
         skip_connections = []
@@ -326,10 +326,7 @@ class GPT(nn.Module):
         logits = 15 * logits * torch.rsqrt(logits.square() + 225)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq)
         carry_state = x.detach()
-        if eod_positions.numel() > 0:
-            prefix_mask = (torch.arange(carry_state.size(1), device=carry_state.device, dtype=eod_positions.dtype)
-                           <= eod_positions[-1]).view(1, -1, 1)
-            carry_state = carry_state.clone().masked_fill(prefix_mask, 0)
+        carry_state = carry_state.clone().masked_fill(prefix_mask, 0)
         return loss, carry_state
 
 # -----------------------------------------------------------------------------
