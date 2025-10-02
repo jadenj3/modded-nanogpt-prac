@@ -6,6 +6,7 @@ import uuid
 import time
 import copy
 import glob
+import random
 from dataclasses import dataclass
 from functools import lru_cache, partial # Added partial for hook registration
 from pathlib import Path
