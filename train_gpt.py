@@ -483,7 +483,7 @@ class GPT(nn.Module):
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
+    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, step : int):
         assert input_seq.ndim == 1
 
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
@@ -506,6 +506,8 @@ class GPT(nn.Module):
         n = len(self.blocks) // 2
 
         max_layers = 6
+        if step % 1000 and max_layers < len(self.blocks):
+            max_layers += 1
 
         for i in range(len(self.blocks)):
             if i >= max_layers:
