@@ -390,19 +390,30 @@ def next_multiple_of_n(v: float | int, *, n: int):
     return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
 
 class GPT(nn.Module):
-    def __init__(self, vocab_size: int, num_layers: int, num_heads: int, model_dim: int, max_seq_len: int):
+    def __init__(self, vocab_size: int, num_layers: int, num_heads: int, model_dim: int, max_seq_len: int, start_layers: int = None):
         super().__init__()
         vocab_size = next_multiple_of_n(vocab_size, n=128)
+        self.num_heads = num_heads
+        self.model_dim = model_dim
+        self.max_seq_len = max_seq_len
+        self.target_num_layers = num_layers
+
+        # Start with fewer layers if specified
+        initial_layers = start_layers if start_layers is not None else num_layers
+        assert initial_layers % 2 == 0, "initial_layers must be even"
+        assert num_layers % 2 == 0, "num_layers must be even"
+
         self.embed = nn.Embedding(vocab_size, model_dim)
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
         self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
-        self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
+        self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(initial_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         self.lm_head = CastedLinear(model_dim, vocab_size, use_fp8=True, x_s=(model_dim**0.5)/448, w_s=24/448, grad_s=1/448)
         self.lm_head.weight.detach().zero_() # @Grad62304977
         # Add learnable skip connection weights for decoder layers
+        # Allocate scalars for target num_layers to allow expansion
         assert num_layers % 2 == 0
         pad = (-num_layers * 5) % dist.get_world_size()
         self.scalars = nn.Parameter(torch.cat([
@@ -418,6 +429,26 @@ class GPT(nn.Module):
             param.lr_mul = 75.
         self.lm_head.weight.lr_mul = 27.5
         self.scalars.lr_mul = 5.0
+
+    def double_layers(self):
+        """Double the number of layers by copying existing layers to create the second half"""
+        current_layers = len(self.blocks)
+        if current_layers >= self.target_num_layers:
+            return False  # Already at target
+
+        # Copy existing blocks to create second half
+        new_blocks = []
+        for i, block in enumerate(self.blocks):
+            # Create a copy of the block with new layer index
+            new_block = Block(self.model_dim, self.num_heads, self.max_seq_len, i + current_layers).cuda()
+            # Copy weights from original block
+            new_block.load_state_dict(block.state_dict())
+            new_blocks.append(new_block)
+
+        # Append new blocks to existing ones
+        self.blocks.extend(new_blocks)
+
+        return True  # Successfully doubled
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -464,12 +495,28 @@ class GPT(nn.Module):
 
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
-        assert len(ve) == len(self.blocks)
+        num_blocks = len(self.blocks)
+        if num_blocks >= 6:
+            ve = [ve[0], ve[1], ve[2]] + [None] * (num_blocks - 6) + [ve[0], ve[1], ve[2]]
+        else:
+            # For fewer than 6 blocks, distribute value embeds evenly
+            ve = [ve[i % 3] if i < 3 or i >= num_blocks - 3 else None for i in range(num_blocks)]
+        assert len(ve) == num_blocks
 
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
-        block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
-        assert len(block_masks) == len(self.blocks)
+        # Generate block masks pattern based on number of blocks
+        # Pattern for 12: [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
+        # For 6 blocks: [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm]
+        block_masks = []
+        if num_blocks == 12:
+            block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
+        elif num_blocks == 6:
+            block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm]
+        else:
+            # Fallback: alternate pattern
+            for i in range(num_blocks):
+                block_masks.append(long_bm if i % 4 == 0 else short_bm)
+        assert len(block_masks) == num_blocks
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
@@ -606,7 +653,7 @@ def nvidia_smi():
 print0(nvidia_smi())
 print0("="*100)
 
-model: nn.Module = GPT(vocab_size=50257, num_layers=12, num_heads=6, model_dim=768, max_seq_len=max(args.train_seq_len, args.val_seq_len)).cuda()
+model: nn.Module = GPT(vocab_size=50257, num_layers=12, num_heads=6, model_dim=768, max_seq_len=max(args.train_seq_len, args.val_seq_len), start_layers=6).cuda()
 for m in model.modules():
     if isinstance(m, nn.Embedding):
         m.bfloat16()
@@ -684,8 +731,36 @@ torch.cuda.synchronize()
 t0 = time.perf_counter()
 # begin training
 train_steps = args.num_iterations
+layers_doubled = False
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
+
+    # --------------- LAYER DOUBLING SECTION -----------------
+    # Double layers at midpoint of training
+    if not layers_doubled and step >= train_steps // 2:
+        print0(f"Doubling layers from {len(model.blocks)} to {model.target_num_layers} at step {step}", console=True)
+        # Need to unwrap compiled model to access double_layers method
+        if hasattr(model, '_orig_mod'):
+            success = model._orig_mod.double_layers()
+        else:
+            success = model.double_layers()
+
+        if success:
+            layers_doubled = True
+            # Re-collect parameters for optimizers with new layers
+            hidden_matrix_params = [p for n, p in model.named_parameters() if 'blocks' in n and p.ndim >= 2 and "embed" not in n]
+            embed_params = [p for n, p in model.named_parameters() if "embed" in n]
+            scalar_params = [p for p in model.parameters() if p.ndim < 2]
+            head_params = [model.lm_head.weight if hasattr(model, 'lm_head') else model._orig_mod.lm_head.weight]
+
+            # Reinitialize optimizers with new parameters
+            optimizer1 = DistAdam(scalar_params + head_params + embed_params, lr=0.008, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0)
+            optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95, weight_decay=0.0)
+            optimizers = [optimizer1, optimizer2]
+            for opt in optimizers:
+                for group in opt.param_groups:
+                    group["initial_lr"] = group["lr"]
+            print0(f"Successfully doubled layers and reinitialized optimizers", console=True)
 
     # --------------- VALIDATION SECTION -----------------
     if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
