@@ -418,6 +418,7 @@ class GPT(nn.Module):
     def __init__(self, vocab_size: int, num_layers: int, num_heads: int, model_dim: int, max_seq_len: int):
         super().__init__()
         vocab_size = next_multiple_of_n(vocab_size, n=128)
+        self.max_active_layers = 6  # Start with 6 layers, can be updated externally
         self.embed = nn.Embedding(vocab_size, model_dim)
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
@@ -484,7 +485,7 @@ class GPT(nn.Module):
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, step = 1):
+    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
 
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
@@ -506,9 +507,8 @@ class GPT(nn.Module):
 
         n = len(self.blocks) // 2
 
-        max_layers = 6
-        if step % 1000 and max_layers < len(self.blocks):
-            max_layers += 1
+        # Use externally-set max_active_layers to control progressive layer activation
+        max_layers = self.max_active_layers
 
         for i in range(len(self.blocks)):
             if i >= max_layers:
@@ -695,7 +695,7 @@ initial_state = dict(model=copy.deepcopy(model.state_dict()),
 train_loader = distributed_data_generator(args.train_files, world_size * args.train_seq_len, align_to_bos=True)
 for warmup_step in range(warmup_steps):
     inputs, targets = next(train_loader)
-    model(inputs, targets, get_window_size_blocks(1), warmup_step).backward()
+    model(inputs, targets, get_window_size_blocks(1)).backward()
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
@@ -718,6 +718,15 @@ train_steps = args.num_iterations
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
 
+    # --------------- PROGRESSIVE LAYER ACTIVATION -----------------
+    # Gradually increase active layers every 1000 steps
+    if step > 0 and step % 1000 == 0:
+        # Access the underlying model if wrapped by torch.compile
+        underlying_model = model._orig_mod if hasattr(model, '_orig_mod') else model
+        if underlying_model.max_active_layers < len(underlying_model.blocks):
+            underlying_model.max_active_layers += 1
+            print0(f"Activated layer {underlying_model.max_active_layers} at step {step}", console=True)
+
     # --------------- VALIDATION SECTION -----------------
     if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
         # stop the clock
@@ -732,7 +741,7 @@ for step in range(train_steps + 1):
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
-                val_loss += model(inputs, targets, get_window_size_blocks(step), step)
+                val_loss += model(inputs, targets, get_window_size_blocks(step))
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
@@ -752,7 +761,7 @@ for step in range(train_steps + 1):
 
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
-    model(inputs, targets, get_window_size_blocks(step), step).backward()
+    model(inputs, targets, get_window_size_blocks(step)).backward()
     # set optimization hyperparameters
     for opt in optimizers:
         for group in opt.param_groups:
