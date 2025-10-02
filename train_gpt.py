@@ -440,9 +440,16 @@ class GPT(nn.Module):
         new_blocks = []
         for i, block in enumerate(self.blocks):
             # Create a copy of the block with new layer index
-            new_block = Block(self.model_dim, self.num_heads, self.max_seq_len, i + current_layers).cuda()
-            # Copy weights from original block
-            new_block.load_state_dict(block.state_dict())
+            new_idx = i + current_layers
+            new_block = Block(self.model_dim, self.num_heads, self.max_seq_len, new_idx).cuda()
+
+            # Copy MLP weights (always present)
+            new_block.mlp.load_state_dict(block.mlp.state_dict())
+
+            # Copy attention weights only if both blocks have attention
+            if block.attn is not None and new_block.attn is not None:
+                new_block.attn.load_state_dict(block.attn.state_dict())
+
             new_blocks.append(new_block)
 
         # Append new blocks to existing ones
