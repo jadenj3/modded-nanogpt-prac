@@ -170,10 +170,12 @@ class Muon(torch.optim.Optimizer):
         for group in self.param_groups:
             params: list[Tensor] = group["params"]
             grad = torch.empty_like(params[-1])
-            grad_pad = [param.grad for param in params] + [torch.zeros_like(params[-1])] * world_size
+            grad_pad = [param.grad if param.grad is not None else torch.zeros_like(param) for param in params] + [torch.zeros_like(params[-1])] * world_size
             for base_i in range(0, len(params), world_size):
                 if base_i + rank < len(params):
                     grad = params[base_i + rank].grad
+                    if grad is None:
+                        grad = torch.zeros_like(params[base_i + rank])
                 # This gives strange dynamo warnings
                 reduce_scatter_futures.append(dist.reduce_scatter(grad, grad_pad[base_i:base_i + world_size], op=dist.ReduceOp.AVG, async_op=True).get_future())
 
@@ -187,6 +189,10 @@ class Muon(torch.optim.Optimizer):
                 if base_i + rank < len(params):
                     p = params[base_i + rank]
                     grad = p.grad
+                    if grad is None:
+                        # Skip parameters without gradients (unused layers)
+                        idx += 1
+                        continue
                     eff_lr = group["lr"] * max(1, p.size(-2) / p.size(-1)) ** 0.5 * getattr(p, "lr_mul", 1.0)
                     eff_weight_decay = group["lr"] * group["weight_decay"] * getattr(p, "wd_mul", 1.0)
                     state = self.state[p]
@@ -228,20 +234,30 @@ class DistAdam(torch.optim.Optimizer):
             grad = torch.empty_like(params[-1])
             for base_i in range(len(params)):
                 grad = params[base_i].grad
+                if grad is None:
+                    # Skip parameters without gradients
+                    grad_slices.append(None)
+                    continue
                 rank_size = grad.shape[0] // world_size
                 grad_slice = torch.empty_like(grad[:rank_size])
                 reduce_scatter_futures.append(dist.reduce_scatter_tensor(grad_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future())
                 grad_slices.append(grad_slice)
 
         idx = 0
+        future_idx = 0
         for group in self.param_groups:
             beta1, beta2 = group['betas']
             eps = group['eps']
             wd = group['weight_decay']
             params = group['params']
             for base in range(len(params)):
-                reduce_scatter_futures[idx].wait()
                 p = params[base]
+                if grad_slices[idx] is None:
+                    # Skip parameters without gradients (unused layers)
+                    idx += 1
+                    continue
+                reduce_scatter_futures[future_idx].wait()
+                future_idx += 1
                 rank_size = p.shape[0] // world_size
                 p_slice = p[rank * rank_size:(rank + 1) * rank_size]
                 lr = group['lr'] * getattr(p, "lr_mul", 1.0)
