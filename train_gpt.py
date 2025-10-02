@@ -719,13 +719,13 @@ for step in range(train_steps + 1):
     last_step = (step == train_steps)
 
     # --------------- PROGRESSIVE LAYER ACTIVATION -----------------
-    # Gradually increase active layers every 1000 steps
-    if step > 0 and step % 1000 == 0:
+    # Double layers from 6 to 12 at step 3000
+    if step == 3000:
         # Access the underlying model if wrapped by torch.compile
         underlying_model = model._orig_mod if hasattr(model, '_orig_mod') else model
-        if underlying_model.max_active_layers < len(underlying_model.blocks):
-            underlying_model.max_active_layers += 1
-            print0(f"Activated layer {underlying_model.max_active_layers} at step {step}", console=True)
+        print0(f"Doubling layers from {underlying_model.max_active_layers} to 12 at step {step}", console=True)
+        print0(f"This will trigger recompilation (~5 minutes)...", console=True)
+        underlying_model.max_active_layers = 12
 
     # --------------- VALIDATION SECTION -----------------
     if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
