@@ -57,6 +57,8 @@ class NanoGPTLMEvalAdapter(LM):
         device: str = "cuda",
         dtype: str = "bfloat16",
         max_gen_toks: int = 128,
+        batch_size: int | None = None,
+        **_: object,
     ) -> None:
         super().__init__()
         self.checkpoint_path = checkpoint_path
@@ -77,7 +79,7 @@ class NanoGPTLMEvalAdapter(LM):
         self._max_length = (
             train_gpt.args.val_batch_size // (train_gpt.grad_accum_steps * train_gpt.world_size)
         )
-        self._batch_size = 1
+        self._batch_size = batch_size or 1
 
         self.model = GPT(
             vocab_size=50257,
