@@ -1,8 +1,5 @@
 import os
 import sys
-
-with open(sys.argv[0]) as f:
-    code = f.read()  # read the code of this file ASAP, for logging
 import copy
 import glob
 import math
@@ -19,11 +16,6 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
-
-if torch.cuda.is_available():
-    torch.empty(
-        1, device=f"cuda:{LOCAL_RANK}", requires_grad=True
-    ).backward()  # prevents a bug on some systems
 import torch._dynamo as dynamo
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -1721,9 +1713,13 @@ def main():
 
     device = torch.device("cuda", local_rank)
     torch.cuda.set_device(device)
+    torch.empty(1, device=device, requires_grad=True).backward()  # prevents a bug on some systems
     dist.init_process_group(backend="nccl", device_id=device)
     dist.barrier()
     master_process = (rank == 0)
+
+    with open(__file__) as f:
+        code = f.read()  # read the code of this file ASAP, for logging
 
     logfile = None
     if master_process:
