@@ -329,6 +329,17 @@ def main():
         default=None,
         help="Limit number of examples per task (for debugging)",
     )
+    parser.add_argument(
+        "--log_samples",
+        action="store_true",
+        help="Write per-sample inputs/outputs to a JSONL file",
+    )
+    parser.add_argument(
+        "--log_samples_suffix",
+        type=str,
+        default="samples",
+        help="Suffix for the samples JSONL file (default: samples)",
+    )
     args = parser.parse_args()
 
     # Build the model wrapper
@@ -347,6 +358,8 @@ def main():
         tasks=task_list,
         num_fewshot=args.num_fewshot,
         limit=args.limit,
+        log_samples=args.log_samples,
+        log_samples_suffix=args.log_samples_suffix,
     )
 
     # Print results
