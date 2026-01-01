@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import inspect
 import sys
 from pathlib import Path
 from typing import Iterable, Sequence
