@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -28,6 +29,10 @@ from typing import Iterable, Sequence
 os.environ.setdefault("RANK", "0")
 os.environ.setdefault("LOCAL_RANK", "0")
 os.environ.setdefault("WORLD_SIZE", "1")
+
+# Allow running the script from any working directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 import torch.nn as nn
