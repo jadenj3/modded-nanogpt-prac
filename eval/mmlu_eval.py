@@ -88,6 +88,8 @@ class NanoGPTLMEvalAdapter(LM):
         ).to(self.device)
         state = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = state.get("model", state)
+        if any(key.startswith("_orig_mod.") for key in state_dict.keys()):
+            state_dict = {key.removeprefix("_orig_mod."): value for key, value in state_dict.items()}
 
         # Load model weights (allow missing YaRN buffers since they're saved separately)
         missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
