@@ -357,8 +357,12 @@ def main():
     eval_params = inspect.signature(evaluator.simple_evaluate).parameters
     if args.log_samples and "log_samples" not in eval_params:
         raise RuntimeError("lm_eval simple_evaluate does not support log_samples in this version.")
+    if args.output and "output_path" not in eval_params:
+        raise RuntimeError("lm_eval simple_evaluate does not support output_path in this version.")
     if "log_samples" in eval_params:
         eval_kwargs["log_samples"] = args.log_samples
+    if args.output and "output_path" in eval_params:
+        eval_kwargs["output_path"] = args.output
 
     results = evaluator.simple_evaluate(**eval_kwargs)
 
