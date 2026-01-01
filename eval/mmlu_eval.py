@@ -334,12 +334,6 @@ def main():
         action="store_true",
         help="Write per-sample inputs/outputs to a JSONL file",
     )
-    parser.add_argument(
-        "--log_samples_suffix",
-        type=str,
-        default="samples",
-        help="Suffix for the samples JSONL file (default: samples)",
-    )
     args = parser.parse_args()
 
     # Build the model wrapper
@@ -353,14 +347,19 @@ def main():
     task_list = [t.strip() for t in args.tasks.split(",")]
 
     # Run evaluation
-    results = evaluator.simple_evaluate(
+    eval_kwargs = dict(
         model=model,
         tasks=task_list,
         num_fewshot=args.num_fewshot,
         limit=args.limit,
-        log_samples=args.log_samples,
-        log_samples_suffix=args.log_samples_suffix,
     )
+    eval_params = inspect.signature(evaluator.simple_evaluate).parameters
+    if args.log_samples and "log_samples" not in eval_params:
+        raise RuntimeError("lm_eval simple_evaluate does not support log_samples in this version.")
+    if "log_samples" in eval_params:
+        eval_kwargs["log_samples"] = args.log_samples
+
+    results = evaluator.simple_evaluate(**eval_kwargs)
 
     # Print results
     print("\n" + "=" * 60)
