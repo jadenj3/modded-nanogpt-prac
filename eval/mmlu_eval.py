@@ -159,18 +159,12 @@ class NanoGPTLMEvalAdapter(LM):
     def loglikelihood(self, requests):
         outputs: list[tuple[float, bool]] = []
         for req in requests:
-            cache_val = self.cache_hook.get("loglikelihood", req.args)
-            if cache_val is not None:
-                outputs.append(cache_val)
-                continue
-
             context, continuation = req.args
             context_tokens = self._encode_with_bos(context)
             continuation_tokens = self.tokenizer.encode(continuation)
             if not continuation_tokens:
                 pair = (0.0, True)
                 outputs.append(pair)
-                self.cache_hook.add_partial("loglikelihood", req.args, pair)
                 continue
 
             tokens = context_tokens + continuation_tokens
@@ -185,7 +179,6 @@ class NanoGPTLMEvalAdapter(LM):
             greedy = bool(selected.argmax(dim=-1).eq(target).all().item())
             pair = (total, greedy)
             outputs.append(pair)
-            self.cache_hook.add_partial("loglikelihood", req.args, pair)
         return outputs
 
     def loglikelihood_rolling(self, requests):
@@ -209,11 +202,6 @@ class NanoGPTLMEvalAdapter(LM):
     def generate_until(self, requests):
         generations: list[str] = []
         for req in requests:
-            cache_val = self.cache_hook.get("generate_until", req.args)
-            if cache_val is not None:
-                generations.append(cache_val)
-                continue
-
             context, gen_kwargs = req.args
             until = gen_kwargs.get("until", []) if isinstance(gen_kwargs, dict) else []
             if isinstance(until, str):
@@ -238,7 +226,6 @@ class NanoGPTLMEvalAdapter(LM):
 
             text = self.tokenizer.decode(generated)
             generations.append(text)
-            self.cache_hook.add_partial("generate_until", req.args, text)
         return generations
 
     # ------------------------------------------------------------------
