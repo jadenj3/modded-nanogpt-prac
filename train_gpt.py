@@ -1109,7 +1109,8 @@ class GPT(nn.Module):
         self.x0_lambdas.lr_mul = 5.0
         self.x0_lambdas.wd_mul = 0.0
 
-        pad = (-num_layers * 3 - 3) % dist.get_world_size()  # updated: 3*num_layers instead of 4*
+        dist_world_size = dist.get_world_size() if dist.is_initialized() else 1
+        pad = (-num_layers * 3 - 3) % dist_world_size  # updated: 3*num_layers instead of 4*
         self.scalars = nn.Parameter(
             torch.cat(
                 [
