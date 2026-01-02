@@ -1779,7 +1779,10 @@ for param in model.parameters():
 model: nn.Module = torch.compile(model, dynamic=False, fullgraph=True)
 training_manager = TrainingManager(model)
 
-########################################
+param_count = sum(p.numel() for p in model.parameters())
+print0(f"parameter_count: {param_count}")
+
+    ########################################
 #            Warmup kernels            #
 ########################################
 print0("Compiling model and warming up kernels (~7 minutes on first execution)", console=True)
