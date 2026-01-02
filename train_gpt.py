@@ -1765,9 +1765,9 @@ print0("=" * 100)
 model: nn.Module = GPT(
     vocab_size=50257,
     num_layers=16,
-    num_heads=8,
-    head_dim=128,
-    model_dim=1024,
+    num_heads=5,
+    head_dim=64,
+    model_dim=320,
     max_seq_len=args.val_batch_size // (grad_accum_steps * world_size)
 ).cuda()
 for m in model.modules():
