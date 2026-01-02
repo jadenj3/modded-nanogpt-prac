@@ -81,34 +81,58 @@ class NanoGPTLMEvalAdapter(LM):
         )
         self._batch_size = batch_size or 1
 
-        self.model = GPT(
-            vocab_size=50257,
-            num_layers=11,
-            num_heads=6,
-            head_dim=128,
-            model_dim=768,
-            max_seq_len=self._max_length,
-        ).to(self.device)
         state = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = state.get("model", state)
         if any(key.startswith("_orig_mod.") for key in state_dict.keys()):
             state_dict = {key.removeprefix("_orig_mod."): value for key, value in state_dict.items()}
 
+        lm_head_key = "lm_head.weight"
+        if lm_head_key not in state_dict:
+            raise RuntimeError("Checkpoint is missing lm_head.weight; cannot infer model dimensions.")
+        vocab_size = state_dict[lm_head_key].shape[0]
+        model_dim = state_dict[lm_head_key].shape[1]
+
+        block_ids = sorted(
+            {int(key.split(".")[1]) for key in state_dict.keys() if key.startswith("blocks.")}
+        )
+        num_layers = block_ids[-1] + 1 if block_ids else 0
+        if num_layers == 0:
+            raise RuntimeError("Checkpoint does not contain any block weights; cannot infer num_layers.")
+
+        attn_gate_key = next(
+            (key for key in state_dict.keys() if key.endswith("attn.attn_gate.weight")), None
+        )
+        if attn_gate_key is None:
+            raise RuntimeError("Checkpoint is missing attn_gate weights; cannot infer num_heads.")
+        num_heads = state_dict[attn_gate_key].shape[0]
+        head_dim = model_dim // num_heads
+
+        self.model = GPT(
+            vocab_size=vocab_size,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            model_dim=model_dim,
+            max_seq_len=self._max_length,
+        ).to(self.device)
+
         # Load model weights (allow missing YaRN buffers since they're saved separately)
         missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
-        expected_missing = {"yarn.cos", "yarn.sin"}
-        actual_missing = set(missing) - expected_missing
-        if actual_missing or unexpected:
+        if missing or unexpected:
             raise RuntimeError(
-                f"Checkpoint mismatch. Missing keys: {actual_missing}. Unexpected keys: {unexpected}."
+                f"Checkpoint mismatch. Missing keys: {set(missing)}. Unexpected keys: {unexpected}."
             )
 
-        # Load non-persistent state that was saved separately in checkpoint
-        self.model.split_embed = state["split_embed"]
-        self.model.yarn.cos = state["yarn_cos"].to(self.device)
-        self.model.yarn.sin = state["yarn_sin"].to(self.device)
-        self.model.yarn.angular_freq = state["yarn_angular_freq"].to(self.device)
-        self.model.yarn.attn_scale = state["yarn_attn_scale"]
+        # Load non-persistent state that may be saved separately in checkpoint
+        self.model.split_embed = state.get("split_embed", False)
+        if "yarn_cos" in state:
+            self.model.yarn.cos = state["yarn_cos"].to(self.device)
+        if "yarn_sin" in state:
+            self.model.yarn.sin = state["yarn_sin"].to(self.device)
+        if "yarn_angular_freq" in state:
+            self.model.yarn.angular_freq = state["yarn_angular_freq"].to(self.device)
+        if "yarn_attn_scale" in state:
+            self.model.yarn.attn_scale = state["yarn_attn_scale"]
 
         for module in self.model.modules():
             if isinstance(module, (nn.Embedding, nn.Linear)):

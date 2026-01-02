@@ -1,5 +1,8 @@
 import os
 import sys
+
+with open(sys.argv[0]) as f:
+    code = f.read()  # read the code of this file ASAP, for logging
 import copy
 import glob
 import math
@@ -15,7 +18,9 @@ import gc
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 
-LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
+torch.empty(
+    1, device=f"cuda:{os.environ['LOCAL_RANK']}", requires_grad=True
+).backward()  # prevents a bug on some systems
 import torch._dynamo as dynamo
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -538,10 +543,10 @@ class NorMuon(torch.optim.Optimizer):
         and mlp params when a param group is split across GPUs.
         """
         params_list = list(params)
-        module_group_order = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']
-        group_sizes = [15, 16, 16]
+        module_group_order = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']  # 16, 10, 16, 32
+        group_sizes = [16, 10, 16, 16, 16]
         params_list.sort(key=lambda x: module_group_order.index(x.label))
-
+        print0(len(params_list), console=True)
         idx = 0
         assert len(params_list) == sum(group_sizes)
         param_groups = []
@@ -780,7 +785,7 @@ class DistAdam(torch.optim.Optimizer):
                 )
 
     def copy_lm_to_embed(self):
-        # run at 2/3 of training
+        # run at 1/6 of training
         lm_head = self.param_groups[0]['params'][0]
         embed = self.param_groups[-1]['params'][0]
         lm_head_state = self.state[lm_head]
@@ -857,7 +862,7 @@ def norm(x: Tensor):
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int, use_fp8=False, x_s=1.0, w_s=1.0, grad_s=1.0):
         super().__init__(in_features, out_features, bias=False)
-        self.use_fp8 = use_fp8
+        self.use_fp8 = False  # turn off fp8 for now -> requires tuning of scales which hasnt been done on medium track
         self.x_s = x_s
         self.w_s = w_s
         self.grad_s = grad_s
@@ -964,13 +969,15 @@ class CausalSelfAttention(nn.Module):
             self.qkvo_w[self.dim * 3:].zero_()  # init O weights to zero
 
         # sparse gated attention to enable context based no-op by @classiclarryd
-        self.attn_gate = CastedLinear(12, num_heads)
+        self.attn_gate = CastedLinear(16, num_heads)
         self.attn_gate.weight.label = 'attn_gate'
+        self.attn_gate.weight.lr_mul = 0.1
 
         # only include gates on layers with value embeds used on forward pass
-        if layer_idx in [0, 1, 8, 9, 10]:
-            self.value_embed_gate = CastedLinear(12, num_heads)
+        if layer_idx in [0, 1, 2, 3, 4, 11, 12, 13, 14, 15]:
+            self.value_embed_gate = CastedLinear(16, num_heads)
             self.value_embed_gate.weight.label = 'value_embed_gate'
+            self.value_embed_gate.weight.lr_mul = 0.1
 
     def forward(self, x: Tensor, attn_args: AttnArgs):
         B, T = x.size(0), x.size(1)  # batch size, sequence length
@@ -1038,16 +1045,12 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, dim: int, head_dim: int, num_heads: int, layer_idx: int):
         super().__init__()
-        # skip attention of blocks.6 (the 7th layer) by @YouJiacheng
-        self.attn = CausalSelfAttention(dim, head_dim, num_heads, layer_idx) if layer_idx != 6 else None
-        # skip MLP blocks for first MLP layer by @EmelyanenkoK
+        self.attn = CausalSelfAttention(dim, head_dim, num_heads, layer_idx)
         self.mlp = MLP(dim)
 
     def forward(self, x: Tensor, attn_args: AttnArgs):
-        if self.attn is not None:
-            x = x + self.attn(norm(x), attn_args)
-        if self.mlp is not None:
-            x = x + self.mlp(norm(x))
+        x = x + self.attn(norm(x), attn_args)
+        x = x + self.mlp(norm(x))
         return x
 
 
@@ -1072,19 +1075,20 @@ class GPT(nn.Module):
         self.num_layers = num_layers
         vocab_size = next_multiple_of_n(vocab_size, n=128)
 
-        self.smear_gate = CastedLinear(12, 1)
+        self.smear_gate = CastedLinear(16, 1)
         self.smear_gate.weight.label = 'smear_gate'
         self.smear_gate.weight.lr_mul = 0.01
         self.smear_gate.weight.wd_mul = 0.0
 
-        self.skip_gate = CastedLinear(12, 1)
-        self.skip_gate.weight.label = 'skip_gate'
-        self.skip_gate.weight.lr_mul = 0.05
-        self.skip_gate.weight.wd_mul = 0.0
+        self.skip_gates = nn.ModuleList([CastedLinear(16, 1) for _ in range(3)])
+        for sg in self.skip_gates:
+            sg.weight.label = 'skip_gate'
+            sg.weight.lr_mul = 0.01
+            sg.weight.wd_mul = 0.0
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(5)])
         for embed in self.value_embeds:
             nn.init.zeros_(embed.weight)
         for ve in self.value_embeds:
@@ -1103,23 +1107,26 @@ class GPT(nn.Module):
         self.embed = nn.Embedding(vocab_size, model_dim)
         self.embed.weight.label = 'embed'
 
+        self.embed2 = nn.Embedding(vocab_size, model_dim)
+        self.embed2.weight.label = 'embed2'
+
         # x0_lambdas separated out for different optimizer treatment (no beta smoothing)
-        self.x0_lambdas = nn.Parameter(torch.zeros(num_layers))
+        self.x0_lambdas = nn.Parameter(torch.zeros(2 * num_layers))
         self.x0_lambdas.label = 'x0_lambdas'
         self.x0_lambdas.lr_mul = 5.0
         self.x0_lambdas.wd_mul = 0.0
 
         dist_world_size = dist.get_world_size() if dist.is_initialized() else 1
-        pad = (-num_layers * 3 - 3) % dist_world_size  # updated: 3*num_layers instead of 4*
+        pad = (-num_layers * 3 - 5) % dist_world_size  # updated: 3*num_layers instead of 4*
         self.scalars = nn.Parameter(
             torch.cat(
                 [
-                    1.1 * torch.ones(num_layers),
-                    # resid lambdas. 1.1 init such that layer i weight is i^(num_layers-i).
+                    1.05 * torch.ones(num_layers),
+                    # resid lambdas. 1.05 init such that layer i weight is i^(num_layers-i).
                     *[torch.tensor([0.5, 1.0]) for _ in range(num_layers)],  # SA lambdas
                     torch.zeros(1),  # smear_lambda
                     0.5 * torch.ones(1),  # backout_lambda
-                    -1.5 * torch.ones(1),  # skip_lambda -> σ(-1.5) ≈ 0.18
+                    -1.5 * torch.ones(3),  # skip_lambdas -> σ(-1.5) ≈ 0.18
                     torch.ones(pad),
                 ]
             )
@@ -1132,11 +1139,15 @@ class GPT(nn.Module):
             param.wd_mul = 5.
         for param in self.embed.parameters():
             param.wd_mul = 150.
+        for param in self.embed2.parameters():
+            param.lr_mul = 75.
+            param.wd_mul = 5.
         for param in self.lm_head.parameters():
             param.wd_mul = 150.
         self.scalars.lr_mul = 5.0
         self.scalars.wd_mul = 0.0
 
+        # start training with tied embed/lm_head
         self.split_embed = False
 
     def forward(
@@ -1155,24 +1166,24 @@ class GPT(nn.Module):
 
         # set configs
         skip_connections = []
-        skip_in = [3]  # long attention window on layer 3
-        skip_out = [6]  # no attn op on layer 6
+        skip_in = [2, 4, 6]
+        skip_out = [9, 10, 11]
         x_backout = None
-        backout_layer = 7
+        backout_layer = 11
 
         # set lambdas
         resid_lambdas = self.scalars[: 1 * self.num_layers]
-        x0_lambdas = self.x0_lambdas
+        x0_lambdas = self.x0_lambdas.view(-1, 2)
         sa_lambdas = self.scalars[1 * self.num_layers: 3 * self.num_layers].view(-1, 2)
         smear_lambda = self.scalars[3 * self.num_layers]
         backout_lambda = self.scalars[3 * self.num_layers + 1]
-        skip_lambda = self.scalars[3 * self.num_layers + 2]
+        skip_lambdas = self.scalars[3 * self.num_layers + 2: 3 * self.num_layers + 5]
 
         # set block masks and key shift
         short_bm = ws_short * args.block_size
         long_bm = ws_long * args.block_size
-        bm_sizes = [short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, None, short_bm, short_bm, short_bm,
-                    long_bm]
+        bm_sizes = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm,
+                    short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
         assert len(bm_sizes) == self.num_layers
         key_offset = [b == long_bm for b in bm_sizes]  # apply partial key offset to long windows
 
@@ -1184,7 +1195,7 @@ class GPT(nn.Module):
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         # dropping first layer updates this to .12 ... 012
-        ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
+        ve = [ve[0], ve[1], ve[2], ve[3], ve[4]] + [None] * (self.num_layers - 10) + [ve[0], ve[1], ve[2], ve[3], ve[4]]
         assert len(ve) == self.num_layers
 
         # smear token embed forward 1 position @classiclarryd
@@ -1192,6 +1203,9 @@ class GPT(nn.Module):
         x = torch.cat([x[:1], x[1:] + smear_gate_out * x[:-1]])
         x = x0 = norm(x[None])
 
+        x02 = norm(self.embed2(input_seq)[None])
+
+        skip_idx = 0
         for i in range(self.num_layers):
             attn_args = AttnArgs(
                 ve=ve[i],
@@ -1204,22 +1218,38 @@ class GPT(nn.Module):
                 key_offset=key_offset[i]
             )
             if i in skip_out:
-                skip_gate_out = torch.sigmoid(skip_lambda) * 2 * torch.sigmoid(
-                    self.skip_gate(x0[..., :self.skip_gate.weight.size(-1)]))
+                skip_gate_out = torch.sigmoid(skip_lambdas[skip_idx]) * 2 * torch.sigmoid(
+                    self.skip_gates[skip_idx](x0[..., :self.skip_gates[skip_idx].weight.size(-1)]))
+                skip_idx += 1
                 x = x + skip_gate_out * skip_connections.pop()
             if i == 0:
-                x = (resid_lambdas[0] + x0_lambdas[0]) * x
+                x = (resid_lambdas[0] + x0_lambdas[0, 0]) * x + x0_lambdas[0, 1] * x02
             else:
-                x = resid_lambdas[i] * x + x0_lambdas[i] * x0
+                x = resid_lambdas[i] * x + x0_lambdas[i, 0] * x0 + x0_lambdas[i, 1] * x02
             x = self.blocks[i](x, attn_args)
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
                 x_backout = x
 
-        # back out contributions from first 7 layers that are only required for downstream context and not direct prediction
+        # back out contributions from first 2/3 layers that are only required for downstream context and not direct prediction
         x -= backout_lambda * x_backout
         x = norm(x)
+
+        if not self.training:
+            loss = 0
+            logits_chunks = []
+            x_chunks = x.flatten(end_dim=1).chunk(4)
+            for i in range(4):
+                logits: Tensor = F.linear(x_chunks[i], self.lm_head.weight.bfloat16()).float()
+                logits = 23 * torch.sigmoid((logits + 5) / 7.5)
+                loss += F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq.chunk(4)[i], reduction="mean") / 4
+                logits_chunks.append(logits)
+            if return_logits:
+                logits_full = torch.cat(logits_chunks, dim=0).view(x.size(0), x.size(1), -1)
+                return loss, logits_full
+            return loss
+
         logits = self.lm_head(x)
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15
         # @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1). @classiclarryd updated to 23*sigmoid((logits+5)/7.5)
@@ -1227,7 +1257,7 @@ class GPT(nn.Module):
         logits_for_loss = logits.float() if not self.training else logits
 
         n_predict = mtp_weights.size(0) if mtp_weights is not None else 1
-        if self.training and n_predict > 1:
+        if n_predict > 1:
             # Multi-token prediction: take loss of the weighted average of next n_predict tokens
             logits_flat = logits_for_loss.view(-1, logits_for_loss.size(-1))
             idx = F.pad(target_seq, (0, n_predict - 1)).unfold(0, n_predict, 1)  # [T, n_predict] of shifted targets
@@ -1236,11 +1266,8 @@ class GPT(nn.Module):
             for k in range(1, n_predict):  # zero out preds past end of sequence
                 cross_entropy[-k:, k] = 0
             loss = (cross_entropy * mtp_weights).sum()
-        elif self.training:
-            loss = F.cross_entropy(logits_for_loss.view(-1, logits_for_loss.size(-1)), target_seq, reduction="sum")
         else:
-            loss = F.cross_entropy(logits_for_loss.view(-1, logits_for_loss.size(-1)), target_seq, reduction="mean")
-
+            loss = F.cross_entropy(logits_for_loss.view(-1, logits_for_loss.size(-1)), target_seq, reduction="sum")
         if return_logits:
             return loss, logits_for_loss
         return loss
@@ -1450,7 +1477,7 @@ def get_ws(step: int):
     x = step / args.num_scheduled_iterations
     assert 0 <= x < 1
     ws_idx = int(len(args.ws_schedule) * x)
-    return args.ws_schedule[ws_idx] // 2, args.ws_schedule[ws_idx]
+    return min(11, args.ws_schedule[ws_idx] // 2), args.ws_schedule[ws_idx]
 
 
 # learning rate schedule: tied to batch size schedule, with cooldown at the end.
@@ -1459,10 +1486,12 @@ def get_lr(step: int):
         return 0.1
     lr_max = 1.0
     x = step / args.num_scheduled_iterations
-    if x > 1 / 3:
+    if x > 1 / 12:
         lr_max = 1.52  # (16/8)**0.6
-    if x > 2 / 3:
+    if x > 2 / 12:
         lr_max = 1.73  # (24/8)**0.5
+    if x > 3 / 12:
+        lr_max = 2.0
     if x >= 1 - args.cooldown_frac:
         w = (1 - x) / args.cooldown_frac
         lr = lr_max * w + (1 - w) * 0.1
@@ -1511,7 +1540,7 @@ class TrainingManager():
         self.mtp_weights_schedule = self._build_mtp_schedule()
         self.model = model
 
-        adam_labels = ['lm_head', 'value_embed', 'smear_gate', 'skip_gate', 'x0_lambdas', 'embed']
+        adam_labels = ['lm_head', 'value_embed', 'smear_gate', 'skip_gate', 'x0_lambdas', 'embed2', 'embed']
         scalar_labels = ['scalars']
         muon_labels = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']
         adam_params = [p for p in model.parameters() if getattr(p, 'label', None) in adam_labels]
@@ -1520,10 +1549,10 @@ class TrainingManager():
         assert set(getattr(p, 'label', None) for p in model.parameters()) == set(
             adam_labels + scalar_labels + muon_labels), "All params must have label"
 
-        self.adam_opt = DistAdam(adam_params, adam_labels, lr=0.008, betas=(0.65, 0.95), eps=1e-8, weight_decay=0.005)
+        self.adam_opt = DistAdam(adam_params, adam_labels, lr=0.004, betas=(0.8, 0.95), eps=1e-8, weight_decay=0.005)
         self.scalar_opt = DistAdam(scalar_params, scalar_labels, lr=0.008, betas=(0.9, 0.99), eps=1e-8,
                                    weight_decay=0.005)
-        self.muon_opt = NorMuon(muon_params, lr=0.023, momentum=0.95, beta2=0.95, weight_decay=1.2)
+        self.muon_opt = NorMuon(muon_params, lr=0.015, momentum=0.95, beta2=0.95, weight_decay=1.2)
         self.optimizers = [self.adam_opt, self.scalar_opt, self.muon_opt]
         # split after odd number step
         self.split_step = math.ceil(args.split_embed_frac * args.num_scheduled_iterations) | 1
@@ -1547,7 +1576,7 @@ class TrainingManager():
         # Schedule: [1, 0.5, 0.25->0] -> [1, 0.5->0] -> [1]
         mtp_weights_schedule = []
         for s in range(args.num_iterations + 1):
-            x = s / args.num_scheduled_iterations
+            x = s / (args.num_scheduled_iterations / 4)
             if x < 1 / 3:
                 w = [1.0, 0.5, 0.25 * (1 - 3 * x)]
             elif x < 2 / 3:
@@ -1582,7 +1611,8 @@ class TrainingManager():
 
     def advance_schedule(self, step: int):
         self.ws_short, new_ws_long = get_ws(step)
-        if new_ws_long != self.ws_long:
+        # only apply yarn for first few
+        if new_ws_long != self.ws_long and new_ws_long <= 13:
             self.model.yarn.apply(self.ws_long, new_ws_long)
 
         new_batch_size = get_bs(step)
@@ -1654,25 +1684,30 @@ class Hyperparameters:
     val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
     val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # batch sizes
-    train_bs_schedule: tuple = (8 * 2048 * 8, 16 * 2048 * 8, 24 * 2048 * 8)
-    train_bs_extension: int = 24 * 2048 * 8
-    train_max_seq_len: int = 128 * 16
+    train_bs_schedule: tuple = (131072, 262144, 393216, 524288,
+                                524288, 524288, 524288, 524288,
+                                524288, 524288, 524288, 524288
+                                )
+    train_bs_extension: int = 32 * 2048 * 8
+    train_max_seq_len: int = 128 * 16 * 2  # doubled to enable longer window sizes
     val_batch_size: int = 4 * 64 * 1024 * 8
     # optimization
-    num_scheduled_iterations: int = 2500  # number of steps to complete lr and ws schedule
-    num_extension_iterations: int = 60  # number of steps to continue training at final lr and ws
+    num_scheduled_iterations: int = 4700  # number of steps to complete lr and ws schedule
+    num_extension_iterations: int = 40  # number of steps to continue training at final lr and ws
     num_iterations: int = num_scheduled_iterations + num_extension_iterations
-    cooldown_frac: float = 0.50  # fraction of num_scheduled_iterations spent cooling down the learning rate
-    split_embed_frac: float = 2 / 3  # fraction of training when embeddings split from lm_head
+    cooldown_frac: float = 0.70  # fraction of num_scheduled_iterations spent cooling down the learning rate
+    split_embed_frac: float = 2 / 3 / 4
     # evaluation and logging
     run_id: str = f"{uuid.uuid4()}"
     val_loss_every: int = 250  # every how many steps to evaluate val loss? 0 for only at the end
-    save_checkpoint: bool = True
+    save_checkpoint: bool = False
     # attention masking
     block_size: int = 128
-    ws_schedule: tuple = (3, 7, 11)
-    ws_final: int = 13  # increase final validation ws, used for YaRN extension and short window size @classiclarryd
-    ws_validate_post_yarn_ext: int = 20  # extend long windows out even further after applying YaRN
+    ws_schedule: tuple = (3, 7, 11, 13,
+                          15, 17, 19, 21,
+                          23, 23, 23, 23)
+    ws_final: int = 23  # set final validation ws, used for YaRN extension and short window size
+    ws_validate_post_yarn_ext: int = 27  # extend long windows out even further after applying YaRN
 
 
 args = Hyperparameters()
@@ -1681,208 +1716,176 @@ data_path = os.environ.get("DATA_PATH", ".")
 args.train_files = os.path.join(data_path, args.train_files)
 args.val_files = os.path.join(data_path, args.val_files)
 
-rank = int(os.environ.get("RANK", "0"))
-world_size = int(os.environ.get("WORLD_SIZE", "1"))
-world_size = max(world_size, 1)
-grad_accum_steps = max(1, 8 // world_size)
-device = torch.device("cuda", LOCAL_RANK) if torch.cuda.is_available() else torch.device("cpu")
-master_process = (rank == 0)
+# torchrun sets these env variables
+rank = int(os.environ["RANK"])
+world_size = int(os.environ["WORLD_SIZE"])
+assert 8 % world_size == 0, "world_size must be a divisor of 8"
+grad_accum_steps = 8 // world_size
+assert torch.cuda.is_available()
+device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
+torch.cuda.set_device(device)
+dist.init_process_group(backend="nccl", device_id=device)
+dist.barrier()
+master_process = (rank == 0)  # this process will do logging, checkpointing etc.
 
 # begin logging
 logfile = None
+if master_process:
+    run_id = args.run_id
+    os.makedirs("logs", exist_ok=True)
+    logfile = f"logs/{run_id}.txt"
+    print(logfile)
 
 
 def print0(s, console=False):
-    if master_process and logfile is not None:
+    if master_process:
         with open(logfile, "a") as f:
             if console:
                 print(s)
             print(s, file=f)
 
 
-def main():
-    global rank, world_size, grad_accum_steps, device, master_process, logfile
-
-    run_id = args.run_id
-    local_rank = int(os.environ.get("LOCAL_RANK", str(LOCAL_RANK)))
-    rank = int(os.environ.get("RANK", str(rank)))
-    world_size = max(int(os.environ.get("WORLD_SIZE", str(world_size))), 1)
-    grad_accum_steps = max(1, 8 // world_size)
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA device required for training")
-
-    device = torch.device("cuda", local_rank)
-    torch.cuda.set_device(device)
-    torch.empty(1, device=device, requires_grad=True).backward()  # prevents a bug on some systems
-    dist.init_process_group(backend="nccl", device_id=device)
-    dist.barrier()
-    master_process = (rank == 0)
-
-    with open(__file__) as f:
-        code = f.read()  # read the code of this file ASAP, for logging
-
-    logfile = None
-    if master_process:
-        os.makedirs("logs", exist_ok=True)
-        logfile = f"logs/{run_id}.txt"
-        print(logfile)
-
-    # begin by printing this file (the Python code)
-    print0(code)
-    print0("=" * 100)
-    # log information about the hardware/software environment this is running on
-    print0(f"Running Python {sys.version}")
-    print0(f"Running PyTorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}")
-    print0(f"Running Triton version {triton.__version__}")
+# begin by printing this file (the Python code)
+print0(code)
+print0("=" * 100)
+# log information about the hardware/software environment this is running on
+print0(f"Running Python {sys.version}")
+print0(f"Running PyTorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}")
+print0(f"Running Triton version {triton.__version__}")
 
 
-    def nvidia_smi():
-        import subprocess  # avoid top level import
-        return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
+def nvidia_smi():
+    import subprocess  # avoid top level import
+    return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
 
 
-    print0(nvidia_smi())
-    print0("=" * 100)
+print0(nvidia_smi())
+print0("=" * 100)
 
-    model: nn.Module = GPT(
-        vocab_size=50257,
-        num_layers=11,
-        num_heads=6,
-        head_dim=128,
-        model_dim=768,
-        max_seq_len=args.val_batch_size // (grad_accum_steps * world_size)
-    ).cuda()
-    for m in model.modules():
-        if isinstance(m, (nn.Embedding, nn.Linear)):
-            m.weight.data = m.weight.data.bfloat16()
-    for param in model.parameters():
-        dist.broadcast(param.detach(), 0)
+model: nn.Module = GPT(
+    vocab_size=50257,
+    num_layers=16,
+    num_heads=8,
+    head_dim=128,
+    model_dim=1024,
+    max_seq_len=args.val_batch_size // (grad_accum_steps * world_size)
+).cuda()
+for m in model.modules():
+    if isinstance(m, (nn.Embedding, nn.Linear)):
+        m.weight.data = m.weight.data.bfloat16()
+for param in model.parameters():
+    dist.broadcast(param.detach(), 0)
 
-    model: nn.Module = torch.compile(model, dynamic=False, fullgraph=True)
-    training_manager = TrainingManager(model)
+model: nn.Module = torch.compile(model, dynamic=False, fullgraph=True)
+training_manager = TrainingManager(model)
 
-    ########################################
-    #            Warmup kernels            #
-    ########################################
-    print0("Compiling model and warming up kernels (~7 minutes on first execution)", console=True)
-    # Warmup the training kernels, then re-initialize the state so we aren't cheating
-    initial_state = dict(model=copy.deepcopy(model.state_dict()),
-                         optimizers=training_manager.get_state())  # save the initial state
-    train_loader = distributed_data_generator(args.train_files, args.train_bs_schedule[0], args.train_max_seq_len,
-                                              grad_accum_steps=grad_accum_steps)
-    val_loader = distributed_data_generator(args.val_files, args.val_batch_size, -1, grad_accum_steps=grad_accum_steps,
-                                            align_to_bos=False)
+########################################
+#            Warmup kernels            #
+########################################
+print0("Compiling model and warming up kernels (~7 minutes on first execution)", console=True)
+# Warmup the training kernels, then re-initialize the state so we aren't cheating
+initial_state = dict(model=copy.deepcopy(model.state_dict()),
+                     optimizers=training_manager.get_state())  # save the initial state
+train_loader = distributed_data_generator(args.train_files, args.train_bs_schedule[0], args.train_max_seq_len,
+                                          grad_accum_steps=grad_accum_steps)
+val_loader = distributed_data_generator(args.val_files, args.val_batch_size, -1, grad_accum_steps=grad_accum_steps,
+                                        align_to_bos=False)
 
-    transition_steps = training_manager.get_transition_steps()
-    warmup_steps = sorted(set(s + offset for s in transition_steps for offset in [-1, 0, 1] if s + offset >= 0))
-    print0(f"Sampling steps {warmup_steps} for warmup", console=True)
-    for step in warmup_steps:
-        training_manager.advance_schedule(step)
-        model.eval()
-        with torch.no_grad():
-            inputs, targets, cum_seqlens = next(val_loader)
-            model(inputs, targets, cum_seqlens, training_manager.get_forward_args())
-        model.train()
-        for idx in range(grad_accum_steps):
-            # enable gradient sync for the DistAdam optimizers on the last iteration before we step them
-            if idx == grad_accum_steps - 1:
-                training_manager.activate_hooks(step)
-            send_args = training_manager.train_loader_send_args
-            inputs, targets, cum_seqlens = train_loader.send(send_args)
-            (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
-        training_manager.step_optimizers(step)
-    print0("Resetting Model", console=True)
-    model.zero_grad(set_to_none=True)
-    model.load_state_dict(initial_state["model"])
-    training_manager.reset(initial_state["optimizers"])
-    del val_loader, train_loader, initial_state
+transition_steps = training_manager.get_transition_steps()
+warmup_steps = sorted(set(s + offset for s in transition_steps for offset in [-1, 0, 1] if s + offset >= 0))
+print0(f"Sampling steps {warmup_steps} for warmup", console=True)
+for step in warmup_steps:
+    training_manager.advance_schedule(step)
+    model.eval()
+    with torch.no_grad():
+        inputs, targets, cum_seqlens = next(val_loader)
+        model(inputs, targets, cum_seqlens, training_manager.get_forward_args())
     model.train()
+    for idx in range(grad_accum_steps):
+        # enable gradient sync for the DistAdam optimizers on the last iteration before we step them
+        if idx == grad_accum_steps - 1:
+            training_manager.activate_hooks(step)
+        send_args = training_manager.train_loader_send_args
+        inputs, targets, cum_seqlens = train_loader.send(send_args)
+        (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
+    training_manager.step_optimizers(step)
+print0("Resetting Model", console=True)
+model.zero_grad(set_to_none=True)
+model.load_state_dict(initial_state["model"])
+training_manager.reset(initial_state["optimizers"])
+del val_loader, train_loader, initial_state
+model.train()
 
-    ########################################
-    #        Training and validation       #
-    ########################################
-    train_loader = distributed_data_generator(args.train_files, args.train_bs_schedule[0], args.train_max_seq_len,
-                                              grad_accum_steps=grad_accum_steps)
+########################################
+#        Training and validation       #
+########################################
+train_loader = distributed_data_generator(args.train_files, args.train_bs_schedule[0], args.train_max_seq_len,
+                                          grad_accum_steps=grad_accum_steps)
 
-    gc.collect()
+gc.collect()
 
-    training_time_ms = 0
-    # start the clock
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    # begin training
-    train_steps = args.num_iterations
-    for step in range(train_steps + 1):
-        last_step = (step == train_steps)
-        training_manager.advance_schedule(step)
-        # --------------- VALIDATION SECTION -----------------
-        if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
-            if last_step:
-                training_manager.apply_final_ws_ext()
-            # stop the clock
-            torch.cuda.synchronize()
-            training_time_ms += 1000 * (time.perf_counter() - t0)
-            model.eval()
-            assert args.val_tokens % args.val_batch_size == 0
-            val_steps = grad_accum_steps * args.val_tokens // args.val_batch_size
-            val_loader = distributed_data_generator(args.val_files, args.val_batch_size, -1,
-                                                    grad_accum_steps=grad_accum_steps, align_to_bos=False)
-            val_loss = 0
-            with torch.no_grad():
-                for _ in range(val_steps):
-                    inputs, targets, cum_seqlens = next(val_loader)
-                    val_loss += model(inputs, targets, cum_seqlens, training_manager.get_forward_args())
-            val_loss /= val_steps
-            del val_loader
-            dist.reduce(val_loss, 0, op=dist.ReduceOp.AVG)
-            print0(
-                f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
-                console=True)
-            model.train()
-            # start the clock again
-            torch.cuda.synchronize()
-            t0 = time.perf_counter()
-
+training_time_ms = 0
+# start the clock
+torch.cuda.synchronize()
+t0 = time.perf_counter()
+# begin training
+train_steps = args.num_iterations
+for step in range(train_steps + 1):
+    last_step = (step == train_steps)
+    training_manager.advance_schedule(step)
+    # --------------- VALIDATION SECTION -----------------
+    if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
         if last_step:
-            if master_process and args.save_checkpoint:
-                log = dict(
-                    step=step,
-                    code=code,
-                    model=model.state_dict(),
-                    optimizers=training_manager.get_state(),
-                    # Save non-persistent state needed for evaluation
-                    split_embed=model.split_embed,
-                    yarn_cos=model.yarn.cos,
-                    yarn_sin=model.yarn.sin,
-                    yarn_angular_freq=model.yarn.angular_freq,
-                    yarn_attn_scale=model.yarn.attn_scale,
-                )
-                os.makedirs(f"logs/{run_id}", exist_ok=True)
-                torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
-            # the last step only has the validation loop, so break to avoid training
-            break
-
-        # --------------- TRAINING SECTION -----------------
-        for idx in range(grad_accum_steps):
-            # enable gradient sync for the DistAdam optimizers on the last iteration before we step them
-            if idx == grad_accum_steps - 1:
-                training_manager.activate_hooks(step)
-            send_args = training_manager.train_loader_send_args
-            inputs, targets, cum_seqlens = train_loader.send(send_args)
-            (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
-        training_manager.step_optimizers(step)
-
-        # logging
-        approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
+            training_manager.apply_final_ws_ext()
+        # stop the clock
+        torch.cuda.synchronize()
+        training_time_ms += 1000 * (time.perf_counter() - t0)
+        model.eval()
+        assert args.val_tokens % args.val_batch_size == 0
+        val_steps = grad_accum_steps * args.val_tokens // args.val_batch_size
+        val_loader = distributed_data_generator(args.val_files, args.val_batch_size, -1,
+                                                grad_accum_steps=grad_accum_steps, align_to_bos=False)
+        val_loss = 0
+        with torch.no_grad():
+            for _ in range(val_steps):
+                inputs, targets, cum_seqlens = next(val_loader)
+                val_loss += model(inputs, targets, cum_seqlens, training_manager.get_forward_args())
+        val_loss /= val_steps
+        del val_loader
+        dist.reduce(val_loss, 0, op=dist.ReduceOp.AVG)
         print0(
-            f"step:{step + 1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / (step + 1):.2f}ms",
+            f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
             console=True)
+        model.train()
+        # start the clock again
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
 
-    print0(f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
-           f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB", console=True)
-    dist.destroy_process_group()
+    if last_step:
+        if master_process and args.save_checkpoint:
+            log = dict(step=step, code=code, model=model.state_dict(),
+                       optimizers=[opt.state_dict() for opt in optimizers])
+            os.makedirs(f"logs/{run_id}", exist_ok=True)
+            torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
+        # the last step only has the validation loop, so break to avoid training
+        break
 
+    # --------------- TRAINING SECTION -----------------
+    for idx in range(grad_accum_steps):
+        # enable gradient sync for the DistAdam optimizers on the last iteration before we step them
+        if idx == grad_accum_steps - 1:
+            training_manager.activate_hooks(step)
+        send_args = training_manager.train_loader_send_args
+        inputs, targets, cum_seqlens = train_loader.send(send_args)
+        (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
+    training_manager.step_optimizers(step)
 
-if __name__ == "__main__":
-    main()
+    # logging
+    approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
+    print0(
+        f"step:{step + 1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / (step + 1):.2f}ms",
+        console=True)
+
+print0(f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
+       f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB", console=True)
+dist.destroy_process_group()
