@@ -1689,7 +1689,7 @@ class Hyperparameters:
     train_max_seq_len: int = 128 * 16 * 2  # doubled to enable longer window sizes
     val_batch_size: int = 4 * 64 * 1024 * 8
     # optimization
-    num_scheduled_iterations: int = 7000  # number of steps to complete lr and ws schedule
+    num_scheduled_iterations: int = 5000  # number of steps to complete lr and ws schedule
     num_extension_iterations: int = 40  # number of steps to continue training at final lr and ws
     num_iterations: int = num_scheduled_iterations + num_extension_iterations
     cooldown_frac: float = 0.70  # fraction of num_scheduled_iterations spent cooling down the learning rate
