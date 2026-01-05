@@ -1808,6 +1808,7 @@ def main():
     gc.collect()
 
     training_time_ms = 0
+    tokens_trained = 0
     # start the clock
     torch.cuda.synchronize()
     t0 = time.perf_counter()
@@ -1837,7 +1838,7 @@ def main():
             del val_loader
             dist.reduce(val_loss, 0, op=dist.ReduceOp.AVG)
             print0(
-                f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
+                f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms tokens_trained:{tokens_trained}",
                 console=True)
             model.train()
             # start the clock again
@@ -1872,6 +1873,7 @@ def main():
             inputs, targets, cum_seqlens = train_loader.send(send_args)
             (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
         training_manager.step_optimizers(step)
+        tokens_trained += get_bs(step)
 
         # logging
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
