@@ -67,11 +67,36 @@ def _init_tokenizer():
 
 
 def _tokenize(doc):
+    text = _format_doc(doc)
     tokens = [_EOT]
-    tokens.extend(_ENC.encode_ordinary(doc["text"]))
+    tokens.extend(_ENC.encode_ordinary(text))
     tokens_np = np.array(tokens)
     assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), "token dictionary too large for uint16"
     return tokens_np.astype(np.uint16)
+
+
+def _format_doc(doc):
+    if "text" in doc:
+        return doc["text"]
+    if all(key in doc for key in ("query", "synthetic_reasoning", "synthetic_answer")):
+        return (
+            "<|im_start|>user\n"
+            + doc["query"]
+            + "<|im_end|>\n"
+            + "<|im_start|>assistant\n\n<think>\n"
+            + doc["synthetic_reasoning"]
+            + "\n</think>\n\n"
+            + doc["synthetic_answer"]
+            + "<|im_end|>"
+        )
+    if "messages" in doc:
+        parts = []
+        for msg in doc["messages"]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+        return "\n".join(parts)
+    raise KeyError("No supported text field found in SYNTH sample")
 
 
 def main():
