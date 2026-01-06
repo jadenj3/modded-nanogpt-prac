@@ -16,6 +16,9 @@ import tiktoken
 from datasets import load_dataset
 from tqdm import tqdm
 
+_ENC = None
+_EOT = None
+
 
 def write_datafile(filename, toks):
     """
@@ -57,6 +60,20 @@ def parse_args():
     return parser.parse_args()
 
 
+def _init_tokenizer():
+    global _ENC, _EOT
+    _ENC = tiktoken.get_encoding("gpt2")
+    _EOT = _ENC._special_tokens["<|endoftext|>"]
+
+
+def _tokenize(doc):
+    tokens = [_EOT]
+    tokens.extend(_ENC.encode_ordinary(doc["text"]))
+    tokens_np = np.array(tokens)
+    assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), "token dictionary too large for uint16"
+    return tokens_np.astype(np.uint16)
+
+
 def main():
     args = parse_args()
     local_dir = "synth"
@@ -77,23 +94,13 @@ def main():
             data_files=[args.data_files],
         )
 
-    enc = tiktoken.get_encoding("gpt2")
-    eot = enc._special_tokens["<|endoftext|>"]
-
-    def tokenize(doc):
-        tokens = [eot]
-        tokens.extend(enc.encode_ordinary(doc["text"]))
-        tokens_np = np.array(tokens)
-        assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), "token dictionary too large for uint16"
-        return tokens_np.astype(np.uint16)
-
     nprocs = max(1, os.cpu_count() - 2)
-    with mp.Pool(nprocs) as pool:
+    with mp.Pool(nprocs, initializer=_init_tokenizer) as pool:
         shard_index = 0
         all_tokens_np = np.empty((args.shard_size,), dtype=np.uint16)
         token_count = 0
         progress_bar = None
-        for tokens in pool.imap(tokenize, dataset, chunksize=16):
+        for tokens in pool.imap(_tokenize, dataset, chunksize=16):
             if token_count + len(tokens) < args.shard_size:
                 all_tokens_np[token_count:token_count + len(tokens)] = tokens
                 token_count += len(tokens)
