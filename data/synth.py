@@ -76,27 +76,16 @@ def _tokenize(doc):
 
 
 def _format_doc(doc):
-    if "text" in doc:
-        return doc["text"]
-    if all(key in doc for key in ("query", "synthetic_reasoning", "synthetic_answer")):
-        return (
-            "<|im_start|>user\n"
-            + doc["query"]
-            + "<|im_end|>\n"
-            + "<|im_start|>assistant\n\n<think>\n"
-            + doc["synthetic_reasoning"]
-            + "\n</think>\n\n"
-            + doc["synthetic_answer"]
-            + "<|im_end|>"
-        )
-    if "messages" in doc:
-        parts = []
-        for msg in doc["messages"]:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
-        return "\n".join(parts)
-    raise KeyError("No supported text field found in SYNTH sample")
+    return (
+        "<|im_start|>user\n"
+        + doc["query"]
+        + "<|im_end|>\n"
+        + "<|im_start|>assistant\n\n<think>\n"
+        + doc["synthetic_reasoning"]
+        + "\n</think>\n\n"
+        + doc["synthetic_answer"]
+        + "<|im_end|>"
+    )
 
 
 def main():
@@ -118,6 +107,10 @@ def main():
             split="train",
             data_files=[args.data_files],
         )
+
+    dataset = dataset.filter(
+        lambda x: "query" in x and "synthetic_reasoning" in x and "synthetic_answer" in x
+    )
 
     nprocs = max(1, os.cpu_count() - 2)
     with mp.Pool(nprocs, initializer=_init_tokenizer) as pool:
