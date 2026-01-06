@@ -8,6 +8,7 @@ Creates .bin shards compatible with the training loader:
 The first shard is used as validation, remaining shards are training.
 """
 import os
+import glob
 import argparse
 import multiprocessing as mp
 import numpy as np
@@ -62,11 +63,19 @@ def main():
     data_cache_dir = os.path.join(os.path.dirname(__file__), local_dir)
     os.makedirs(data_cache_dir, exist_ok=True)
 
-    dataset = load_dataset(
-        "PleIAs/SYNTH",
-        split="train",
-        data_files=[args.data_files],
-    )
+    local_files = sorted(glob.glob(args.data_files))
+    if local_files:
+        dataset = load_dataset(
+            "parquet",
+            data_files=local_files,
+            split="train",
+        )
+    else:
+        dataset = load_dataset(
+            "PleIAs/SYNTH",
+            split="train",
+            data_files=[args.data_files],
+        )
 
     enc = tiktoken.get_encoding("gpt2")
     eot = enc._special_tokens["<|endoftext|>"]
