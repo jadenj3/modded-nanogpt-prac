@@ -1650,10 +1650,10 @@ class TrainingManager():
 @dataclass
 class Hyperparameters:
     # data
-    # train_files: str = "data/fineweb10B/fineweb_train_*.bin"  # input .bin to train on
-    # val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
-    train_files: str = "data/finewebedu10B/finewebedu_train_*.bin"  # input .bin to train on
-    val_files: str = "data/finewebedu10B/finewebedu_val_*.bin"  # input .bin to eval validation loss on
+    train_files: str = "data/fineweb10B/fineweb_train_*.bin"  # input .bin to train on
+    val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
+    #train_files: str = "data/finewebedu10B/finewebedu_train_*.bin"  # input .bin to train on
+    #val_files: str = "data/finewebedu10B/finewebedu_val_*.bin"  # input .bin to eval validation loss on
     val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # batch sizes
     train_bs_schedule: tuple = (8 * 2048 * 8, 16 * 2048 * 8, 24 * 2048 * 8)
