@@ -25,6 +25,8 @@ import triton
 import triton.language as tl
 from kernels import get_kernel
 from torch import Tensor, nn
+import numpy as np
+import random
 
 dynamo.config.recompile_limit = 64
 
