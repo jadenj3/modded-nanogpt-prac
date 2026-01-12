@@ -1872,6 +1872,15 @@ def main():
                     w_cos_02 = F.cosine_similarity(ve_weights[0], ve_weights[2], dim=1).mean().item()
                     w_cos_12 = F.cosine_similarity(ve_weights[1], ve_weights[2], dim=1).mean().item()
                     print(f"Value embedding cosine similarities (full weights) - ve0-ve1: {w_cos_01:.4f}, ve0-ve2: {w_cos_02:.4f}, ve1-ve2: {w_cos_12:.4f}")
+                    # Baseline comparisons to establish what similarity looks like in high-dim space
+                    embed_w = model.embed.weight.data
+                    ve_embed_cos = [F.cosine_similarity(embed_w, ve.weight.data, dim=1).mean().item()
+                                    for ve in model.value_embeds]
+                    print(f"Main embed vs value embeds: ve0={ve_embed_cos[0]:.4f}, ve1={ve_embed_cos[1]:.4f}, ve2={ve_embed_cos[2]:.4f}")
+                    # Random token pairs within same embedding (baseline for unrelated vectors)
+                    perm = torch.randperm(embed_w.size(0), device=embed_w.device)
+                    random_cos = F.cosine_similarity(embed_w, embed_w[perm], dim=1).mean().item()
+                    print(f"Random token pairs within embed (baseline): {random_cos:.4f}")
             model.train()
             # start the clock again
             torch.cuda.synchronize()
