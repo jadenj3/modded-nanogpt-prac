@@ -1097,11 +1097,14 @@ class GPT(nn.Module):
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
-        for embed in self.value_embeds:
-            nn.init.zeros_(embed.weight)
-        for ve in self.value_embeds:
-            ve.weight.label = 'value_embed'
+        # Modified: single base embedding + 2 linear projections instead of 3 separate embeddings
+        self.value_embed_base = nn.Embedding(vocab_size, model_dim)
+        nn.init.zeros_(self.value_embed_base.weight)
+        self.value_embed_base.weight.label = 'value_embed'
+        self.ve_projections = nn.ModuleList([nn.Linear(model_dim, model_dim, bias=False) for _ in range(2)])
+        for proj in self.ve_projections:
+            nn.init.eye_(proj.weight)  # identity init so ve[1], ve[2] start equal to ve[0]
+            proj.weight.label = 'value_embed_proj'
         self.blocks = nn.ModuleList([Block(model_dim, head_dim, num_heads, i) for i in range(num_layers)])
         self.yarn = Yarn(head_dim, max_seq_len)
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
@@ -1140,9 +1143,13 @@ class GPT(nn.Module):
 
         self.scalars.label = 'scalars'
         # set learning rates
-        for param in self.value_embeds.parameters():
+        for param in self.value_embed_base.parameters():
             param.lr_mul = 75.
             param.wd_mul = 5.
+        for proj in self.ve_projections:
+            for param in proj.parameters():
+                param.lr_mul = 75.
+                param.wd_mul = 5.
         for param in self.embed.parameters():
             param.wd_mul = 150.
         for param in self.lm_head.parameters():
@@ -1194,7 +1201,8 @@ class GPT(nn.Module):
             x = self.embed(input_seq)
         else:
             x = F.embedding(input_seq, self.lm_head.weight)
-        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+        ve_base = self.value_embed_base(input_seq)
+        ve = [ve_base, self.ve_projections[0](ve_base), self.ve_projections[1](ve_base)]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         # dropping first layer updates this to .12 ... 012
         ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
@@ -1524,7 +1532,7 @@ class TrainingManager():
         self.mtp_weights_schedule = self._build_mtp_schedule()
         self.model = model
 
-        adam_labels = ['lm_head', 'value_embed', 'smear_gate', 'skip_gate', 'x0_lambdas', 'embed']
+        adam_labels = ['lm_head', 'value_embed', 'value_embed_proj', 'smear_gate', 'skip_gate', 'x0_lambdas', 'embed']
         scalar_labels = ['scalars']
         muon_labels = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']
         adam_params = [p for p in model.parameters() if getattr(p, 'label', None) in adam_labels]
@@ -1674,7 +1682,7 @@ class Hyperparameters:
     train_max_seq_len: int = 128 * 16
     val_batch_size: int = 4 * 64 * 1024 * 8
     # optimization
-    num_scheduled_iterations: int = 1750  # number of steps to complete lr and ws schedule
+    num_scheduled_iterations: int = 250  # number of steps to complete lr and ws schedule
     num_extension_iterations: int = 60  # number of steps to continue training at final lr and ws
     num_iterations: int = num_scheduled_iterations + num_extension_iterations
     cooldown_frac: float = 0.50  # fraction of num_scheduled_iterations spent cooling down the learning rate
@@ -1859,7 +1867,10 @@ def main():
             if master_process:
                 with torch.no_grad():
                     # Get value embeddings for the tokens in the last validation batch
-                    ve_for_tokens = [ve(inputs) for ve in model.value_embeds]
+                    ve_base_tokens = model.value_embed_base(inputs)
+                    ve_for_tokens = [ve_base_tokens,
+                                     model.ve_projections[0](ve_base_tokens),
+                                     model.ve_projections[1](ve_base_tokens)]
                     # Flatten to [num_tokens, model_dim]
                     ve_flat = [v.view(-1, v.size(-1)) for v in ve_for_tokens]
                     cos_01 = F.cosine_similarity(ve_flat[0], ve_flat[1], dim=1).mean().item()
@@ -1867,15 +1878,18 @@ def main():
                     cos_12 = F.cosine_similarity(ve_flat[1], ve_flat[2], dim=1).mean().item()
                     print(f"Value embedding cosine similarities (last val batch) - ve0-ve1: {cos_01:.4f}, ve0-ve2: {cos_02:.4f}, ve1-ve2: {cos_12:.4f}")
                     # Cosine similarity across full weight matrices (all vocab tokens)
-                    ve_weights = [ve.weight.data for ve in model.value_embeds]
+                    # Compute effective weight matrices: ve[1] = base @ proj[0].weight.T, etc.
+                    base_w = model.value_embed_base.weight.data
+                    ve_weights = [base_w,
+                                  base_w @ model.ve_projections[0].weight.data.T,
+                                  base_w @ model.ve_projections[1].weight.data.T]
                     w_cos_01 = F.cosine_similarity(ve_weights[0], ve_weights[1], dim=1).mean().item()
                     w_cos_02 = F.cosine_similarity(ve_weights[0], ve_weights[2], dim=1).mean().item()
                     w_cos_12 = F.cosine_similarity(ve_weights[1], ve_weights[2], dim=1).mean().item()
                     print(f"Value embedding cosine similarities (full weights) - ve0-ve1: {w_cos_01:.4f}, ve0-ve2: {w_cos_02:.4f}, ve1-ve2: {w_cos_12:.4f}")
                     # Baseline comparisons to establish what similarity looks like in high-dim space
                     embed_w = model.embed.weight.data
-                    ve_embed_cos = [F.cosine_similarity(embed_w, ve.weight.data, dim=1).mean().item()
-                                    for ve in model.value_embeds]
+                    ve_embed_cos = [F.cosine_similarity(embed_w, w, dim=1).mean().item() for w in ve_weights]
                     print(f"Main embed vs value embeds: ve0={ve_embed_cos[0]:.4f}, ve1={ve_embed_cos[1]:.4f}, ve2={ve_embed_cos[2]:.4f}")
                     # Random token pairs within same embedding (baseline for unrelated vectors)
                     perm = torch.randperm(embed_w.size(0), device=embed_w.device)
