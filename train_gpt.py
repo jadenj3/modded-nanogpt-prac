@@ -1855,6 +1855,23 @@ def main():
             print0(
                 f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms tokens_trained:{tokens_trained}",
                 console=True)
+            # Compute cosine similarity between value embeddings for last validation batch tokens
+            if master_process:
+                with torch.no_grad():
+                    # Get value embeddings for the tokens in the last validation batch
+                    ve_for_tokens = [ve(inputs) for ve in model.value_embeds]
+                    # Flatten to [num_tokens, model_dim]
+                    ve_flat = [v.view(-1, v.size(-1)) for v in ve_for_tokens]
+                    cos_01 = F.cosine_similarity(ve_flat[0], ve_flat[1], dim=1).mean().item()
+                    cos_02 = F.cosine_similarity(ve_flat[0], ve_flat[2], dim=1).mean().item()
+                    cos_12 = F.cosine_similarity(ve_flat[1], ve_flat[2], dim=1).mean().item()
+                    print(f"Value embedding cosine similarities (last val batch) - ve0-ve1: {cos_01:.4f}, ve0-ve2: {cos_02:.4f}, ve1-ve2: {cos_12:.4f}")
+                    # Cosine similarity across full weight matrices (all vocab tokens)
+                    ve_weights = [ve.weight.data for ve in model.value_embeds]
+                    w_cos_01 = F.cosine_similarity(ve_weights[0], ve_weights[1], dim=1).mean().item()
+                    w_cos_02 = F.cosine_similarity(ve_weights[0], ve_weights[2], dim=1).mean().item()
+                    w_cos_12 = F.cosine_similarity(ve_weights[1], ve_weights[2], dim=1).mean().item()
+                    print(f"Value embedding cosine similarities (full weights) - ve0-ve1: {w_cos_01:.4f}, ve0-ve2: {w_cos_02:.4f}, ve1-ve2: {w_cos_12:.4f}")
             model.train()
             # start the clock again
             torch.cuda.synchronize()
