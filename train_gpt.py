@@ -552,7 +552,7 @@ class NorMuon(torch.optim.Optimizer):
         """
         params_list = list(params)
         module_group_order = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']
-        group_sizes = [15, 16, 16]
+        group_sizes = [15, 16, 21]
         params_list.sort(key=lambda x: module_group_order.index(x.label))
 
         idx = 0
@@ -1023,7 +1023,7 @@ class CausalSelfAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, has_ve: bool = False):
         super().__init__()
         hdim = 4 * dim
         # Transposed layout to match attention weights
@@ -1034,14 +1034,25 @@ class MLP(nn.Module):
         self.c_proj.label = 'mlp'
         self.c_proj.lr_mul = 2.
 
+        # Value embed projection (only on layers with ve)
+        if has_ve:
+            self.ve_proj = nn.Parameter(torch.empty(hdim, dim))
+            self.ve_proj.label = 'mlp'
+        else:
+            self.ve_proj = None
+
         std = 0.5 * (dim ** -0.5)
         bound = (3 ** 0.5) * std  # improved init scale by @YouJiacheng
         with torch.no_grad():
             self.c_fc.uniform_(-bound, bound)
             self.c_proj.zero_()  # zero init suggested by @Grad62304977
+            if has_ve:
+                self.ve_proj.zero_()
 
-    def forward(self, x: Tensor):
+    def forward(self, x: Tensor, ve: Tensor = None):
         x = F.linear(x, self.c_fc.type_as(x))
+        if ve is not None and self.ve_proj is not None:
+            x = x + F.linear(ve, self.ve_proj.type_as(ve))
         x = F.relu(
             x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
         x = F.linear(x, self.c_proj.T.type_as(x))
@@ -1054,13 +1065,14 @@ class Block(nn.Module):
         # skip attention of blocks.6 (the 7th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, head_dim, num_heads, layer_idx) if layer_idx != 6 else None
         # skip MLP blocks for first MLP layer by @EmelyanenkoK
-        self.mlp = MLP(dim)
+        has_ve = layer_idx in [0, 1, 8, 9, 10]
+        self.mlp = MLP(dim, has_ve=has_ve)
 
-    def forward(self, x: Tensor, attn_args: AttnArgs):
+    def forward(self, x: Tensor, attn_args: AttnArgs, ve: Tensor = None):
         if self.attn is not None:
             x = x + self.attn(norm(x), attn_args)
         if self.mlp is not None:
-            x = x + self.mlp(norm(x))
+            x = x + self.mlp(norm(x), ve)
         return x
 
 
@@ -1224,7 +1236,7 @@ class GPT(nn.Module):
                 x = (resid_lambdas[0] + x0_lambdas[0]) * x
             else:
                 x = resid_lambdas[i] * x + x0_lambdas[i] * x0
-            x = self.blocks[i](x, attn_args)
+            x = self.blocks[i](x, attn_args, ve[i])
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
