@@ -552,7 +552,7 @@ class NorMuon(torch.optim.Optimizer):
         """
         params_list = list(params)
         module_group_order = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']
-        group_sizes = [15, 16, 16]
+        group_sizes = [15, 16, 27]
         params_list.sort(key=lambda x: module_group_order.index(x.label))
 
         idx = 0
@@ -1029,9 +1029,12 @@ class MLP(nn.Module):
         # Transposed layout to match attention weights
         self.c_fc = nn.Parameter(torch.empty(hdim, dim))
         self.c_proj = nn.Parameter(torch.empty(hdim, dim))
+        # x0 projection for value residual
+        self.x0_proj = nn.Parameter(torch.empty(hdim, dim))
         # label all modules for explicit optimizer grouping
         self.c_fc.label = 'mlp'
         self.c_proj.label = 'mlp'
+        self.x0_proj.label = 'mlp'
         self.c_proj.lr_mul = 2.
 
         std = 0.5 * (dim ** -0.5)
@@ -1039,13 +1042,14 @@ class MLP(nn.Module):
         with torch.no_grad():
             self.c_fc.uniform_(-bound, bound)
             self.c_proj.zero_()  # zero init suggested by @Grad62304977
+            self.x0_proj.zero_()  # zero init - starts as no-op
 
-    def forward(self, x: Tensor, ve: Tensor = None):
+    def forward(self, x: Tensor, x0: Tensor = None):
         x = F.linear(x, self.c_fc.type_as(x))
+        if x0 is not None:
+            x = x + F.linear(x0, self.x0_proj.type_as(x0))
         x = F.relu(
             x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        if ve is not None:
-            x = x + ve
         x = F.linear(x, self.c_proj.T.type_as(x))
         return x
 
@@ -1058,11 +1062,11 @@ class Block(nn.Module):
         # skip MLP blocks for first MLP layer by @EmelyanenkoK
         self.mlp = MLP(dim)
 
-    def forward(self, x: Tensor, attn_args: AttnArgs, ve: Tensor = None):
+    def forward(self, x: Tensor, attn_args: AttnArgs, x0: Tensor = None):
         if self.attn is not None:
             x = x + self.attn(norm(x), attn_args)
         if self.mlp is not None:
-            x = x + self.mlp(norm(x), ve)
+            x = x + self.mlp(norm(x), x0)
         return x
 
 
@@ -1104,12 +1108,6 @@ class GPT(nn.Module):
             nn.init.zeros_(embed.weight)
         for ve in self.value_embeds:
             ve.weight.label = 'value_embed'
-        # MLP value embedding - separate from attention value embeds, sized for MLP hidden dim
-        self.mlp_value_embed = nn.Embedding(vocab_size, 4 * model_dim)
-        nn.init.zeros_(self.mlp_value_embed.weight)
-        self.mlp_value_embed.weight.label = 'value_embed'
-        self.mlp_value_embed.weight.lr_mul = 75.
-        self.mlp_value_embed.weight.wd_mul = 5.
         self.blocks = nn.ModuleList([Block(model_dim, head_dim, num_heads, i) for i in range(num_layers)])
         self.yarn = Yarn(head_dim, max_seq_len)
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
@@ -1207,9 +1205,6 @@ class GPT(nn.Module):
         # dropping first layer updates this to .12 ... 012
         ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
         assert len(ve) == self.num_layers
-        # MLP value embedding - same U-net pattern
-        mlp_ve_raw = self.mlp_value_embed(input_seq)
-        mlp_ve = [mlp_ve_raw, mlp_ve_raw] + [None] * (self.num_layers - 5) + [mlp_ve_raw, mlp_ve_raw, mlp_ve_raw]
 
         # smear token embed forward 1 position @classiclarryd
         smear_gate_out = smear_lambda * torch.sigmoid(self.smear_gate(x[1:, :self.smear_gate.weight.size(-1)]))
@@ -1235,7 +1230,7 @@ class GPT(nn.Module):
                 x = (resid_lambdas[0] + x0_lambdas[0]) * x
             else:
                 x = resid_lambdas[i] * x + x0_lambdas[i] * x0
-            x = self.blocks[i](x, attn_args, mlp_ve[i])
+            x = self.blocks[i](x, attn_args, x0)
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
@@ -1892,6 +1887,9 @@ def main():
                     perm = torch.randperm(embed_w.size(0), device=embed_w.device)
                     random_cos = F.cosine_similarity(embed_w, embed_w[perm], dim=1).mean().item()
                     print(f"Random token pairs within embed (baseline): {random_cos:.4f}")
+                    # Check x0_proj norms to see if MLP value residuals are learning
+                    x0_proj_norms = [block.mlp.x0_proj.data.norm().item() for block in model.blocks]
+                    print(f"x0_proj norms per layer: {['%.4f' % n for n in x0_proj_norms]}")
             model.train()
             # start the clock again
             torch.cuda.synchronize()
