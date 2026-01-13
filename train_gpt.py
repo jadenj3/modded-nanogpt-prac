@@ -1114,6 +1114,12 @@ class GPT(nn.Module):
             nn.init.zeros_(embed.weight)
         for ve in self.value_embeds:
             ve.weight.label = 'value_embed'
+        # MLP value embedding - separate from attention value embeds
+        self.mlp_value_embed = nn.Embedding(vocab_size, model_dim)
+        nn.init.zeros_(self.mlp_value_embed.weight)
+        self.mlp_value_embed.weight.label = 'value_embed'
+        self.mlp_value_embed.weight.lr_mul = 75.
+        self.mlp_value_embed.weight.wd_mul = 5.
         self.blocks = nn.ModuleList([Block(model_dim, head_dim, num_heads, i) for i in range(num_layers)])
         self.yarn = Yarn(head_dim, max_seq_len)
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
@@ -1211,6 +1217,9 @@ class GPT(nn.Module):
         # dropping first layer updates this to .12 ... 012
         ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
         assert len(ve) == self.num_layers
+        # MLP value embedding - same U-net pattern
+        mlp_ve_raw = self.mlp_value_embed(input_seq)
+        mlp_ve = [mlp_ve_raw, mlp_ve_raw] + [None] * (self.num_layers - 5) + [mlp_ve_raw, mlp_ve_raw, mlp_ve_raw]
 
         # smear token embed forward 1 position @classiclarryd
         smear_gate_out = smear_lambda * torch.sigmoid(self.smear_gate(x[1:, :self.smear_gate.weight.size(-1)]))
@@ -1236,7 +1245,7 @@ class GPT(nn.Module):
                 x = (resid_lambdas[0] + x0_lambdas[0]) * x
             else:
                 x = resid_lambdas[i] * x + x0_lambdas[i] * x0
-            x = self.blocks[i](x, attn_args, ve[i])
+            x = self.blocks[i](x, attn_args, mlp_ve[i])
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
