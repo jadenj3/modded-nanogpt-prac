@@ -1051,10 +1051,10 @@ class MLP(nn.Module):
 
     def forward(self, x: Tensor, ve: Tensor = None):
         x = F.linear(x, self.c_fc.type_as(x))
-        if ve is not None and self.ve_proj is not None:
-            x = x + F.linear(ve, self.ve_proj.type_as(ve))
         x = F.relu(
             x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+        if ve is not None and self.ve_proj is not None:
+            x = x + F.linear(ve, self.ve_proj.type_as(ve))
         x = F.linear(x, self.c_proj.T.type_as(x))
         return x
 
