@@ -552,7 +552,7 @@ class NorMuon(torch.optim.Optimizer):
         """
         params_list = list(params)
         module_group_order = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']
-        group_sizes = [15, 16, 27]
+        group_sizes = [15, 16, 16]
         params_list.sort(key=lambda x: module_group_order.index(x.label))
 
         idx = 0
@@ -1029,12 +1029,9 @@ class MLP(nn.Module):
         # Transposed layout to match attention weights
         self.c_fc = nn.Parameter(torch.empty(hdim, dim))
         self.c_proj = nn.Parameter(torch.empty(hdim, dim))
-        # x0 projection for value residual
-        self.x0_proj = nn.Parameter(torch.empty(hdim, dim))
         # label all modules for explicit optimizer grouping
         self.c_fc.label = 'mlp'
         self.c_proj.label = 'mlp'
-        self.x0_proj.label = 'mlp'
         self.c_proj.lr_mul = 2.
 
         std = 0.5 * (dim ** -0.5)
@@ -1042,14 +1039,13 @@ class MLP(nn.Module):
         with torch.no_grad():
             self.c_fc.uniform_(-bound, bound)
             self.c_proj.zero_()  # zero init suggested by @Grad62304977
-            self.x0_proj.zero_()  # zero init - starts as no-op
 
     def forward(self, x: Tensor, x0: Tensor = None):
+        if x0 is not None:
+            x = x + x0
         x = F.linear(x, self.c_fc.type_as(x))
         x = F.relu(
             x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        if x0 is not None:
-            x = x + F.linear(x0, self.x0_proj.type_as(x0))
         x = F.linear(x, self.c_proj.T.type_as(x))
         return x
 
@@ -1887,9 +1883,6 @@ def main():
                     perm = torch.randperm(embed_w.size(0), device=embed_w.device)
                     random_cos = F.cosine_similarity(embed_w, embed_w[perm], dim=1).mean().item()
                     print(f"Random token pairs within embed (baseline): {random_cos:.4f}")
-                    # Check x0_proj norms to see if MLP value residuals are learning
-                    x0_proj_norms = [block.mlp.x0_proj.data.norm().item() for block in model.blocks]
-                    print(f"x0_proj norms per layer: {['%.4f' % n for n in x0_proj_norms]}")
             model.train()
             # start the clock again
             torch.cuda.synchronize()
