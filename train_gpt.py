@@ -2181,7 +2181,9 @@ for step in range(train_steps + 1):
             with torch.no_grad():
                 def eff_rank(w):
                     s = torch.linalg.svdvals(w.float())
-                    s_norm = s / s.sum()
+                    # Use squared singular values (eigenvalues of W^T W)
+                    s_sq = s ** 2
+                    s_norm = s_sq / s_sq.sum()
                     entropy = -(s_norm * torch.log(s_norm + 1e-10)).sum()
                     return torch.exp(entropy).item()
 
