@@ -2176,6 +2176,16 @@ for step in range(train_steps + 1):
         print0(
             f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
             console=True)
+        # Log effective rank of value embeddings
+        if master_process:
+            with torch.no_grad():
+                for idx, ve in enumerate(model.value_embeds):
+                    w = ve.weight.data.float()
+                    s = torch.linalg.svdvals(w)
+                    s_norm = s / s.sum()
+                    entropy = -(s_norm * torch.log(s_norm + 1e-10)).sum()
+                    eff_rank = torch.exp(entropy).item()
+                    print(f"Value embed {idx} effective rank: {eff_rank:.2f} / {w.size(0)}")
         model.train()
         # start the clock again
         torch.cuda.synchronize()
