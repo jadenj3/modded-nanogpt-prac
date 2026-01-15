@@ -2233,14 +2233,19 @@ for step in range(train_steps + 1):
     # Log gradient norms periodically
     if master_process and step % 50 == 0:
         grad_norms = {}
+        grad_per_param = {}  # normalized by numel
         for name, p in model.named_parameters():
             if p.grad is not None:
                 label = getattr(p, 'label', 'unlabeled')
                 if label not in grad_norms:
                     grad_norms[label] = []
+                    grad_per_param[label] = []
                 grad_norms[label].append(p.grad.norm().item())
-        grad_summary = {k: f"{sum(v)/len(v):.4f}" for k, v in grad_norms.items()}
-        print(f"step {step} grad norms (mean per label): {grad_summary}")
+                grad_per_param[label].append(p.grad.norm().item() / (p.numel() ** 0.5))
+        grad_summary = {k: f"{sum(v)/len(v):.2f}" for k, v in grad_norms.items()}
+        grad_normalized = {k: f"{sum(v)/len(v):.6f}" for k, v in grad_per_param.items()}
+        print(f"step {step} grad norms: {grad_summary}")
+        print(f"step {step} grad/sqrt(numel): {grad_normalized}")
 
     training_manager.step_optimizers(step)
 
