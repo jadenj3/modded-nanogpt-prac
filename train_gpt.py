@@ -2229,6 +2229,19 @@ for step in range(train_steps + 1):
         send_args = training_manager.train_loader_send_args
         inputs, targets, cum_seqlens = train_loader.send(send_args)
         (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
+
+    # Log gradient norms periodically
+    if master_process and step % 50 == 0:
+        grad_norms = {}
+        for name, p in model.named_parameters():
+            if p.grad is not None:
+                label = getattr(p, 'label', 'unlabeled')
+                if label not in grad_norms:
+                    grad_norms[label] = []
+                grad_norms[label].append(p.grad.norm().item())
+        grad_summary = {k: f"{sum(v)/len(v):.4f}" for k, v in grad_norms.items()}
+        print(f"step {step} grad norms (mean per label): {grad_summary}")
+
     training_manager.step_optimizers(step)
 
     # logging
