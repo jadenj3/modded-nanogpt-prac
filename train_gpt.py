@@ -552,7 +552,7 @@ class NorMuon(torch.optim.Optimizer):
         """
         params_list = list(params)
         module_group_order = ['attn_gate', 'value_embed_gate', 'attn', 'mlp']
-        group_sizes = [15, 16, 27]
+        group_sizes = [15, 16, 16]
         params_list.sort(key=lambda x: module_group_order.index(x.label))
 
         idx = 0
@@ -1040,12 +1040,10 @@ class MLP(nn.Module):
             self.c_fc.uniform_(-bound, bound)
             self.c_proj.zero_()  # zero init suggested by @Grad62304977
 
-    def forward(self, x: Tensor, x0: Tensor = None):
-        if x0 is not None:
-            x = F.linear(x + x0, self.c_fc.type_as(x))  # fused GEMM
-        else:
-            x = F.linear(x, self.c_fc.type_as(x))
-        x = F.relu(x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+    def forward(self, x: Tensor):
+        x = F.linear(x, self.c_fc.type_as(x))
+        x = F.relu(
+            x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
         x = F.linear(x, self.c_proj.T.type_as(x))
         return x
 
@@ -1058,11 +1056,11 @@ class Block(nn.Module):
         # skip MLP blocks for first MLP layer by @EmelyanenkoK
         self.mlp = MLP(dim)
 
-    def forward(self, x: Tensor, attn_args: AttnArgs, x0: Tensor = None):
+    def forward(self, x: Tensor, attn_args: AttnArgs):
         if self.attn is not None:
             x = x + self.attn(norm(x), attn_args)
         if self.mlp is not None:
-            x = x + self.mlp(norm(x), x0)
+            x = x + self.mlp(norm(x))
         return x
 
 
@@ -1226,7 +1224,7 @@ class GPT(nn.Module):
                 x = (resid_lambdas[0] + x0_lambdas[0]) * x
             else:
                 x = resid_lambdas[i] * x + x0_lambdas[i] * x0
-            x = self.blocks[i](x, attn_args, x0)
+            x = self.blocks[i](x, attn_args)
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
@@ -1683,7 +1681,7 @@ class Hyperparameters:
     split_embed_frac: float = 2 / 3  # fraction of training when embeddings split from lm_head
     # evaluation and logging
     run_id: str = f"{uuid.uuid4()}"
-    val_loss_every: int = 125  # every how many steps to evaluate val loss? 0 for only at the end
+    val_loss_every: int = 250  # every how many steps to evaluate val loss? 0 for only at the end
     save_checkpoint: bool = True
     # attention masking
     block_size: int = 128
