@@ -2230,7 +2230,11 @@ for step in range(train_steps + 1):
         inputs, targets, cum_seqlens = train_loader.send(send_args)
         (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
 
-    # Log gradient norms periodically
+    # Clip gradients for scalars (very high per-element gradients)
+    if model.scalars.grad is not None:
+        torch.nn.utils.clip_grad_norm_([model.scalars], max_norm=10.0)
+
+    # Log gradient norms periodically (after clipping)
     if master_process and step % 50 == 0:
         grad_norms = {}
         grad_per_param = {}  # normalized by numel
@@ -2246,10 +2250,6 @@ for step in range(train_steps + 1):
         grad_normalized = {k: f"{sum(v)/len(v):.6f}" for k, v in grad_per_param.items()}
         print(f"step {step} grad norms: {grad_summary}")
         print(f"step {step} grad/sqrt(numel): {grad_normalized}")
-
-    # Clip gradients for scalars (very high per-element gradients)
-    if model.scalars.grad is not None:
-        torch.nn.utils.clip_grad_norm_([model.scalars], max_norm=10.0)
 
     training_manager.step_optimizers(step)
 
