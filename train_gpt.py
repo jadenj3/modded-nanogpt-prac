@@ -2232,7 +2232,7 @@ for step in range(train_steps + 1):
 
     # Clip gradients for scalars (very high per-element gradients)
     if model.scalars.grad is not None:
-        torch.nn.utils.clip_grad_norm_([model.scalars], max_norm=40000.0)
+        torch.nn.utils.clip_grad_norm_([model.scalars], max_norm=80000.0)
 
     # Log gradient norms periodically (after clipping)
     if master_process and step % 50 == 0:
