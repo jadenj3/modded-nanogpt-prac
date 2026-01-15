@@ -2251,6 +2251,27 @@ for step in range(train_steps + 1):
         print(f"step {step} grad norms: {grad_summary}")
         print(f"step {step} grad/sqrt(numel): {grad_normalized}")
 
+        # Per-scalar gradient tracking to identify spikes
+        if model.scalars.grad is not None:
+            num_layers = len(model.blocks)
+            scalar_grads = model.scalars.grad
+            scalar_names = []
+            # resid_lambdas: indices 0 to num_layers-1
+            for i in range(num_layers):
+                scalar_names.append(f"resid_{i}")
+            # sa_lambdas: indices num_layers to 3*num_layers-1 (pairs per layer)
+            for i in range(num_layers):
+                scalar_names.append(f"sa_{i}_0")
+                scalar_names.append(f"sa_{i}_1")
+            # special scalars
+            scalar_names.append("smear")
+            scalar_names.append("backout")
+            scalar_names.append("skip")
+            # Print each scalar's gradient
+            for i, g in enumerate(scalar_grads[:len(scalar_names)]):
+                name = scalar_names[i] if i < len(scalar_names) else f"scalar_{i}"
+                print(f"  {name}_grad: {g.item():.2f}")
+
     training_manager.step_optimizers(step)
 
     # logging
