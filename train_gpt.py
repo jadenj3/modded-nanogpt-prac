@@ -1047,8 +1047,8 @@ class MLP(nn.Module):
     def forward(self, x: Tensor, x0: Tensor = None):
         x = F.linear(x, self.c_fc.type_as(x))
         if x0 is not None:
-            x = F.relu(
-                x).square() + F.linear(x0, self.x0_proj.type_as(x0))  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+            x = F.linear(x0, self.x0_proj.type_as(x0))  + F.relu(
+                x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
         else:
             x = F.relu(
                 x).square()
