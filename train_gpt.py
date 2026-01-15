@@ -2176,16 +2176,29 @@ for step in range(train_steps + 1):
         print0(
             f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
             console=True)
-        # Log effective rank of value embeddings
+        # Log effective rank of various weight matrices
         if master_process:
             with torch.no_grad():
-                for idx, ve in enumerate(model.value_embeds):
-                    w = ve.weight.data.float()
-                    s = torch.linalg.svdvals(w)
+                def eff_rank(w):
+                    s = torch.linalg.svdvals(w.float())
                     s_norm = s / s.sum()
                     entropy = -(s_norm * torch.log(s_norm + 1e-10)).sum()
-                    eff_rank = torch.exp(entropy).item()
-                    print(f"Value embed {idx} effective rank: {eff_rank:.2f} / {w.size(0)}")
+                    return torch.exp(entropy).item()
+
+                # Value embeddings
+                for idx, ve in enumerate(model.value_embeds):
+                    w = ve.weight.data
+                    print(f"Value embed {idx} effective rank: {eff_rank(w):.2f} / {min(w.shape)}")
+
+                # Main embedding
+                w = model.embed.weight.data
+                print(f"Main embed effective rank: {eff_rank(w):.2f} / {min(w.shape)}")
+
+                # MLP projections (average across layers)
+                c_fc_ranks = [eff_rank(block.mlp.c_fc.data) for block in model.blocks]
+                c_proj_ranks = [eff_rank(block.mlp.c_proj.data) for block in model.blocks]
+                print(f"MLP c_fc effective rank (mean): {sum(c_fc_ranks)/len(c_fc_ranks):.2f} / {min(model.blocks[0].mlp.c_fc.shape)}")
+                print(f"MLP c_proj effective rank (mean): {sum(c_proj_ranks)/len(c_proj_ranks):.2f} / {min(model.blocks[0].mlp.c_proj.shape)}")
         model.train()
         # start the clock again
         torch.cuda.synchronize()
