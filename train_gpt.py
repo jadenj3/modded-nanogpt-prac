@@ -2192,6 +2192,12 @@ for step in range(train_steps + 1):
                     w = ve.weight.data
                     print(f"Value embed {idx} effective rank: {eff_rank(w):.2f} / {min(w.shape)}")
 
+                # Per-token variance across the 3 value embeddings
+                # High variance = embeddings are specializing, low variance = learning similar things
+                stacked = torch.stack([ve.weight.data for ve in model.value_embeds])  # [3, vocab_size, model_dim]
+                ve_variance = stacked.var(dim=0).mean().item()  # variance across the 3 embeddings
+                print(f"Value embed cross-layer variance: {ve_variance:.6f}")
+
                 # Main embedding
                 w = model.embed.weight.data
                 print(f"Main embed effective rank: {eff_rank(w):.2f} / {min(w.shape)}")
