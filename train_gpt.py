@@ -1436,8 +1436,8 @@ class GPT(nn.Module):
         self.ve_proj_2 = CastedLinear(model_dim, model_dim)
         nn.init.eye_(self.ve_proj_1.weight)  # Identity initialization (overrides zero init)
         nn.init.eye_(self.ve_proj_2.weight)
-        self.ve_proj_1.weight.label = 'mlp'
-        self.ve_proj_2.weight.label = 'mlp'
+        self.ve_proj_1.weight.label = 've_proj'
+        self.ve_proj_2.weight.label = 've_proj'
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
@@ -1881,7 +1881,7 @@ class TrainingManager():
         }
         adam_labels = list(adam_betas.keys())
         adam_beta_values = list(adam_betas.values())
-        muon_labels = ['attn', 'mlp']
+        muon_labels = ['attn', 'mlp', 've_proj']
         adam_params = [p for p in model.parameters() if getattr(p, 'label', None) in adam_labels]
         muon_params = [p for p in model.parameters() if getattr(p, 'label', None) in muon_labels]
         assert set(getattr(p, 'label', None) for p in model.parameters()) == set(
