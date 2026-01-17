@@ -1880,7 +1880,8 @@ class TrainingManager():
             'x0_lambdas': [0.65, 0.95],
             'scalars': [0.9, 0.99],
             'embed': [0.5, 0.95],
-            'value_embed': [0.75, 0.95]
+            'value_embed': [0.75, 0.95],
+            've_proj': [0.75, 0.95]
         }
         adam_labels = list(adam_betas.keys())
         adam_beta_values = list(adam_betas.values())
