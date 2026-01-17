@@ -28,6 +28,7 @@ import torch.nn.functional as F
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 import triton
 import triton.language as tl
+from triton.tools.tensor_descriptor import TensorDescriptor
 from kernels import get_kernel
 from torch import Tensor, nn
 
@@ -1210,6 +1211,142 @@ class PairedHeadCausalSelfAttention(nn.Module):
         return y
 
 
+@triton.jit
+def linear_relu_square_kernel(a_desc, b_desc, c_desc, aux_desc,
+                              M, N, K,
+                              BLOCK_SIZE_M: tl.constexpr,
+                              BLOCK_SIZE_N: tl.constexpr,
+                              BLOCK_SIZE_K: tl.constexpr,
+                              GROUP_SIZE_M: tl.constexpr,
+                              NUM_SMS: tl.constexpr,
+                              FORWARD: tl.constexpr,
+                              ):
+    dtype = tl.bfloat16
+    start_pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
+    num_tiles = num_pid_m * num_pid_n
+
+    tile_id_c = start_pid - NUM_SMS
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+
+    for tile_id in tl.range(start_pid, num_tiles, NUM_SMS, flatten=True):
+        pid_m = tile_id // num_pid_n
+        pid_n = tile_id % num_pid_n
+        offs_am = pid_m * BLOCK_SIZE_M
+        offs_bn = pid_n * BLOCK_SIZE_N
+
+        accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+        for ki in range(k_tiles):
+            offs_k = ki * BLOCK_SIZE_K
+            a = a_desc.load([offs_am, offs_k])
+            b = b_desc.load([offs_bn, offs_k])
+            accumulator = tl.dot(a, b.T, accumulator)
+
+        tile_id_c += NUM_SMS
+        pid_m = tile_id // num_pid_n
+        pid_n = tile_id % num_pid_n
+        offs_am_c = pid_m * BLOCK_SIZE_M
+        offs_bn_c = pid_n * BLOCK_SIZE_N
+
+        acc = tl.reshape(accumulator, (BLOCK_SIZE_M, 2, BLOCK_SIZE_N // 2))
+        acc = tl.permute(acc, (0, 2, 1))
+        acc0, acc1 = tl.split(acc)
+
+        c0 = acc0.to(dtype)
+        if not FORWARD:
+            c0_pre = aux_desc.load([offs_am_c, offs_bn_c])
+            c0 = 2 * c0 * tl.where(c0_pre > 0, c0_pre, 0)
+
+        c_desc.store([offs_am_c, offs_bn_c], c0)
+
+        if FORWARD:
+            c0_post = tl.maximum(c0, 0)
+            c0_post = c0_post * c0_post
+            aux_desc.store([offs_am_c, offs_bn_c], c0_post)
+
+        c1 = acc1.to(dtype)
+        if not FORWARD:
+            c1_pre = aux_desc.load([offs_am_c, offs_bn_c + BLOCK_SIZE_N // 2])
+            c1 = 2 * c1 * tl.where(c1_pre > 0, c1_pre, 0)
+
+        c_desc.store([offs_am_c, offs_bn_c + BLOCK_SIZE_N // 2], c1)
+
+        if FORWARD:
+            c1_post = tl.maximum(c1, 0)
+            c1_post = c1_post * c1_post
+            aux_desc.store([offs_am_c, offs_bn_c + BLOCK_SIZE_N // 2], c1_post)
+
+
+def linear_relu_square(a, b, aux=None):
+    M, K = a.shape
+    N, K = b.shape
+    dtype = a.dtype
+
+    c = torch.empty((M, N), device=a.device, dtype=dtype)
+
+    FORWARD = False
+    if aux is None:
+        FORWARD = True
+        aux = torch.empty((M, N), device=a.device, dtype=dtype)
+
+    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+
+    BLOCK_SIZE_M = 128
+    BLOCK_SIZE_N = 256
+    BLOCK_SIZE_K = 64
+    num_stages = 4 if FORWARD else 3
+    num_warps = 8
+
+    a_desc = TensorDescriptor.from_tensor(a, [BLOCK_SIZE_M, BLOCK_SIZE_K])
+    b_desc = TensorDescriptor.from_tensor(b, [BLOCK_SIZE_N, BLOCK_SIZE_K])
+    c_desc = TensorDescriptor.from_tensor(c, [BLOCK_SIZE_M, BLOCK_SIZE_N // 2])
+    aux_desc = TensorDescriptor.from_tensor(aux, [BLOCK_SIZE_M, BLOCK_SIZE_N // 2])
+
+    def grid(META):
+        return (min(
+            NUM_SMS,
+            triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, BLOCK_SIZE_N),
+        ),)
+
+    linear_relu_square_kernel[grid](
+        a_desc, b_desc, c_desc, aux_desc,
+        M, N, K,
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        GROUP_SIZE_M=1,
+        NUM_SMS=NUM_SMS,
+        FORWARD=FORWARD,
+        num_stages=num_stages,
+        num_warps=num_warps
+    )
+
+    if FORWARD:
+        return c, aux
+    else:
+        return c
+
+
+class FusedLinearReLUSquareFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, W1, W2):
+        pre, post = linear_relu_square(x.view((-1, x.shape[-1])), W1)
+        x3 = post @ W2
+        ctx.save_for_backward(x, W1, W2, pre, post)
+        return x3.view(x.shape)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, W1, W2, pre, post = ctx.saved_tensors
+        dW2 = post.T @ grad_output
+        dpre = linear_relu_square(grad_output.view((-1, grad_output.shape[-1])), W2, aux=pre)
+        dW1 = dpre.T @ x
+        dx = dpre @ W1
+        return dx.view(x.shape), dW1, dW2
+
+
 class MLP(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
@@ -1228,14 +1365,12 @@ class MLP(nn.Module):
             self.c_fc.uniform_(-bound, bound)
             self.c_proj.zero_()  # zero init suggested by @Grad62304977
 
-    def forward(self, x: Tensor, mlp_embed: Tensor = None):
-        x = F.linear(x, self.c_fc.type_as(x))
-        x = F.relu(
-            x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        if mlp_embed is not None:
-            x = x + mlp_embed
-        x = F.linear(x, self.c_proj.T.type_as(x))
-        return x
+    def forward(self, x: Tensor):
+        # relu(x)^2:
+        # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+
+        # This call computes relu(x @ W1.T)^2 @ W2.T
+        return FusedLinearReLUSquareFunction.apply(x, self.c_fc, self.c_proj)
 
 
 class Block(nn.Module):
@@ -1249,11 +1384,11 @@ class Block(nn.Module):
         # skip MLP blocks for first MLP layer by @EmelyanenkoK
         self.mlp = MLP(dim)
 
-    def forward(self, x: Tensor, attn_args: AttnArgs, mlp_embed: Tensor = None):
+    def forward(self, x: Tensor, attn_args: AttnArgs):
         if self.attn is not None:
             x = x + self.attn(norm(x), attn_args)
         if self.mlp is not None:
-            x = x + self.mlp(norm(x), mlp_embed=mlp_embed)
+            x = x + self.mlp(norm(x))
         return x
 
 
@@ -1295,12 +1430,6 @@ class GPT(nn.Module):
             nn.init.zeros_(embed.weight)
         for ve in self.value_embeds:
             ve.weight.label = 'value_embed'
-
-        # MLP embedding - adds token identity to MLP hidden states
-        hdim = 4 * model_dim
-        self.mlp_embed = nn.Embedding(vocab_size, hdim)
-        nn.init.zeros_(self.mlp_embed.weight)
-        self.mlp_embed.weight.label = 'mlp_embed'
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
@@ -1349,9 +1478,6 @@ class GPT(nn.Module):
         self.scalars.label = 'scalars'
         # set learning rates
         for param in self.value_embeds.parameters():
-            param.lr_mul = 75.
-            param.wd_mul = 5.
-        for param in self.mlp_embed.parameters():
             param.lr_mul = 75.
             param.wd_mul = 5.
         for param in self.embed.parameters():
@@ -1403,9 +1529,6 @@ class GPT(nn.Module):
         ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
         assert len(ve) == self.num_layers
 
-        # MLP embedding lookup - same embedding used for all layers
-        me = self.mlp_embed(input_seq)
-
         # smear token embed forward 1 position @classiclarryd
         smear_gate_out = smear_lambda * torch.sigmoid(self.smear_gate(x[1:, :self.smear_gate.weight.size(-1)]))
         x = torch.cat([x[:1], x[1:] + smear_gate_out * x[:-1]])
@@ -1439,7 +1562,7 @@ class GPT(nn.Module):
                 x = (resid_lambdas[0] + x0_lambdas[0]) * x
             else:
                 x = resid_lambdas[i] * x + x0_lambdas[i] * x0
-            x = self.blocks[i](x, attn_args, mlp_embed=me)
+            x = self.blocks[i](x, attn_args)
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
@@ -1744,8 +1867,7 @@ class TrainingManager():
             'x0_lambdas': [0.65, 0.95],
             'scalars': [0.9, 0.99],
             'embed': [0.5, 0.95],
-            'value_embed': [0.75, 0.95],
-            'mlp_embed': [0.75, 0.95]
+            'value_embed': [0.75, 0.95]
         }
         adam_labels = list(adam_betas.keys())
         adam_beta_values = list(adam_betas.values())
@@ -2054,6 +2176,37 @@ for step in range(train_steps + 1):
         print0(
             f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
             console=True)
+        # Log effective rank of various weight matrices
+        if master_process:
+            with torch.no_grad():
+                def eff_rank(w):
+                    s = torch.linalg.svdvals(w.float())
+                    # Use squared singular values (eigenvalues of W^T W)
+                    s_sq = s ** 2
+                    s_norm = s_sq / s_sq.sum()
+                    entropy = -(s_norm * torch.log(s_norm + 1e-10)).sum()
+                    return torch.exp(entropy).item()
+
+                # Value embeddings
+                for idx, ve in enumerate(model.value_embeds):
+                    w = ve.weight.data
+                    print(f"Value embed {idx} effective rank: {eff_rank(w):.2f} / {min(w.shape)}")
+
+                # Per-token variance across the 3 value embeddings
+                # High variance = embeddings are specializing, low variance = learning similar things
+                stacked = torch.stack([ve.weight.data for ve in model.value_embeds])  # [3, vocab_size, model_dim]
+                ve_variance = stacked.var(dim=0).mean().item()  # variance across the 3 embeddings
+                print(f"Value embed cross-layer variance: {ve_variance:.6f}")
+
+                # Main embedding
+                w = model.embed.weight.data
+                print(f"Main embed effective rank: {eff_rank(w):.2f} / {min(w.shape)}")
+
+                # MLP projections (average across layers)
+                c_fc_ranks = [eff_rank(block.mlp.c_fc.data) for block in model.blocks]
+                c_proj_ranks = [eff_rank(block.mlp.c_proj.data) for block in model.blocks]
+                print(f"MLP c_fc effective rank (mean): {sum(c_fc_ranks)/len(c_fc_ranks):.2f} / {min(model.blocks[0].mlp.c_fc.shape)}")
+                print(f"MLP c_proj effective rank (mean): {sum(c_proj_ranks)/len(c_proj_ranks):.2f} / {min(model.blocks[0].mlp.c_proj.shape)}")
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -2076,6 +2229,45 @@ for step in range(train_steps + 1):
         send_args = training_manager.train_loader_send_args
         inputs, targets, cum_seqlens = train_loader.send(send_args)
         (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
+
+    # Log gradient norms periodically (after clipping)
+    if master_process and step % 50 == 0:
+        grad_norms = {}
+        grad_per_param = {}  # normalized by numel
+        for name, p in model.named_parameters():
+            if p.grad is not None:
+                label = getattr(p, 'label', 'unlabeled')
+                if label not in grad_norms:
+                    grad_norms[label] = []
+                    grad_per_param[label] = []
+                grad_norms[label].append(p.grad.norm().item())
+                grad_per_param[label].append(p.grad.norm().item() / (p.numel() ** 0.5))
+        grad_summary = {k: f"{sum(v)/len(v):.2f}" for k, v in grad_norms.items()}
+        grad_normalized = {k: f"{sum(v)/len(v):.6f}" for k, v in grad_per_param.items()}
+        print(f"step {step} grad norms: {grad_summary}")
+        print(f"step {step} grad/sqrt(numel): {grad_normalized}")
+
+        # Per-scalar gradient tracking to identify spikes
+        if model.scalars.grad is not None:
+            num_layers = len(model.blocks)
+            scalar_grads = model.scalars.grad
+            scalar_names = []
+            # resid_lambdas: indices 0 to num_layers-1
+            for i in range(num_layers):
+                scalar_names.append(f"resid_{i}")
+            # sa_lambdas: indices num_layers to 3*num_layers-1 (pairs per layer)
+            for i in range(num_layers):
+                scalar_names.append(f"sa_{i}_0")
+                scalar_names.append(f"sa_{i}_1")
+            # special scalars
+            scalar_names.append("smear")
+            scalar_names.append("backout")
+            scalar_names.append("skip")
+            # Print each scalar's gradient
+            for i, g in enumerate(scalar_grads[:len(scalar_names)]):
+                name = scalar_names[i] if i < len(scalar_names) else f"scalar_{i}"
+                print(f"  {name}_grad: {g.item():.2f}")
+
     training_manager.step_optimizers(step)
 
     # logging
