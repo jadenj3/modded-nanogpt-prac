@@ -2230,10 +2230,6 @@ for step in range(train_steps + 1):
         inputs, targets, cum_seqlens = train_loader.send(send_args)
         (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
 
-    # Clip gradients for scalars (very high per-element gradients)
-    if model.scalars.grad is not None:
-        torch.nn.utils.clip_grad_norm_([model.scalars], max_norm=80000.0)
-
     # Log gradient norms periodically (after clipping)
     if master_process and step % 50 == 0:
         grad_norms = {}
