@@ -1228,8 +1228,10 @@ class MLP(nn.Module):
             self.c_fc.uniform_(-bound, bound)
             self.c_proj.zero_()  # zero init suggested by @Grad62304977
 
-    def forward(self, x: Tensor):
+    def forward(self, x: Tensor, mlp_embed: Tensor = None):
         x = F.linear(x, self.c_fc.type_as(x))
+        if mlp_embed is not None:
+            x = x + mlp_embed
         x = F.relu(
             x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
         x = F.linear(x, self.c_proj.T.type_as(x))
@@ -1247,11 +1249,11 @@ class Block(nn.Module):
         # skip MLP blocks for first MLP layer by @EmelyanenkoK
         self.mlp = MLP(dim)
 
-    def forward(self, x: Tensor, attn_args: AttnArgs):
+    def forward(self, x: Tensor, attn_args: AttnArgs, mlp_embed: Tensor = None):
         if self.attn is not None:
             x = x + self.attn(norm(x), attn_args)
         if self.mlp is not None:
-            x = x + self.mlp(norm(x))
+            x = x + self.mlp(norm(x), mlp_embed=mlp_embed)
         return x
 
 
@@ -1293,6 +1295,12 @@ class GPT(nn.Module):
             nn.init.zeros_(embed.weight)
         for ve in self.value_embeds:
             ve.weight.label = 'value_embed'
+
+        # MLP embedding - adds token identity to MLP hidden states
+        hdim = 4 * model_dim
+        self.mlp_embed = nn.Embedding(vocab_size, hdim)
+        nn.init.zeros_(self.mlp_embed.weight)
+        self.mlp_embed.weight.label = 'mlp_embed'
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
@@ -1341,6 +1349,9 @@ class GPT(nn.Module):
         self.scalars.label = 'scalars'
         # set learning rates
         for param in self.value_embeds.parameters():
+            param.lr_mul = 75.
+            param.wd_mul = 5.
+        for param in self.mlp_embed.parameters():
             param.lr_mul = 75.
             param.wd_mul = 5.
         for param in self.embed.parameters():
@@ -1392,6 +1403,9 @@ class GPT(nn.Module):
         ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
         assert len(ve) == self.num_layers
 
+        # MLP embedding lookup - same embedding used for all layers
+        me = self.mlp_embed(input_seq)
+
         # smear token embed forward 1 position @classiclarryd
         smear_gate_out = smear_lambda * torch.sigmoid(self.smear_gate(x[1:, :self.smear_gate.weight.size(-1)]))
         x = torch.cat([x[:1], x[1:] + smear_gate_out * x[:-1]])
@@ -1425,7 +1439,7 @@ class GPT(nn.Module):
                 x = (resid_lambdas[0] + x0_lambdas[0]) * x
             else:
                 x = resid_lambdas[i] * x + x0_lambdas[i] * x0
-            x = self.blocks[i](x, attn_args)
+            x = self.blocks[i](x, attn_args, mlp_embed=me)
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
@@ -1730,7 +1744,8 @@ class TrainingManager():
             'x0_lambdas': [0.65, 0.95],
             'scalars': [0.9, 0.99],
             'embed': [0.5, 0.95],
-            'value_embed': [0.75, 0.95]
+            'value_embed': [0.75, 0.95],
+            'mlp_embed': [0.75, 0.95]
         }
         adam_labels = list(adam_betas.keys())
         adam_beta_values = list(adam_betas.values())
