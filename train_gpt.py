@@ -1425,11 +1425,19 @@ class GPT(nn.Module):
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(5)])
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
         for embed in self.value_embeds:
             nn.init.zeros_(embed.weight)
         for ve in self.value_embeds:
             ve.weight.label = 'value_embed'
+
+        # Linear projections for ve[1]→layer 8 and ve[2]→layer 9
+        self.ve_proj_1 = CastedLinear(model_dim, model_dim)
+        self.ve_proj_2 = CastedLinear(model_dim, model_dim)
+        nn.init.eye_(self.ve_proj_1.weight)  # Identity initialization (overrides zero init)
+        nn.init.eye_(self.ve_proj_2.weight)
+        self.ve_proj_1.weight.label = 've_proj'
+        self.ve_proj_2.weight.label = 've_proj'
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
@@ -1480,6 +1488,9 @@ class GPT(nn.Module):
         for param in self.value_embeds.parameters():
             param.lr_mul = 75.
             param.wd_mul = 5.
+        for param in [self.ve_proj_1.weight, self.ve_proj_2.weight]:
+            param.lr_mul = 75.
+            param.wd_mul = 5.
         for param in self.embed.parameters():
             param.wd_mul = 150.
         for param in self.lm_head.parameters():
@@ -1524,9 +1535,11 @@ class GPT(nn.Module):
         else:
             x = F.embedding(input_seq, self.lm_head.weight)
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
-        # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        # dropping first layer updates this to .12 ... 012
-        ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[3], ve[4]]
+        # Linear projections of ve[1] and ve[2] for layers 8 and 9
+        ve_proj_1_out = self.ve_proj_1(ve[1])
+        ve_proj_2_out = self.ve_proj_2(ve[2])
+        # .12 ... 012 structure with projections for layers 8,9
+        ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve_proj_1_out, ve_proj_2_out]
         assert len(ve) == self.num_layers
 
         # smear token embed forward 1 position @classiclarryd
