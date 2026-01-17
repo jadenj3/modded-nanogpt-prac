@@ -1436,8 +1436,8 @@ class GPT(nn.Module):
         self.ve_proj_2 = CastedLinear(model_dim, model_dim)
         nn.init.eye_(self.ve_proj_1.weight)  # Identity initialization (overrides zero init)
         nn.init.eye_(self.ve_proj_2.weight)
-        self.ve_proj_1.weight.label = 've_proj'
-        self.ve_proj_2.weight.label = 've_proj'
+        self.ve_proj_1.weight.label = 'mlp'
+        self.ve_proj_2.weight.label = 'mlp'
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
@@ -1486,9 +1486,6 @@ class GPT(nn.Module):
         self.scalars.label = 'scalars'
         # set learning rates
         for param in self.value_embeds.parameters():
-            param.lr_mul = 75.
-            param.wd_mul = 5.
-        for param in [self.ve_proj_1.weight, self.ve_proj_2.weight]:
             param.lr_mul = 75.
             param.wd_mul = 5.
         for param in self.embed.parameters():
@@ -1880,8 +1877,7 @@ class TrainingManager():
             'x0_lambdas': [0.65, 0.95],
             'scalars': [0.9, 0.99],
             'embed': [0.5, 0.95],
-            'value_embed': [0.75, 0.95],
-            've_proj': [0.75, 0.95]
+            'value_embed': [0.75, 0.95]
         }
         adam_labels = list(adam_betas.keys())
         adam_beta_values = list(adam_betas.values())
