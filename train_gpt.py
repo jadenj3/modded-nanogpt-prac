@@ -853,10 +853,10 @@ class Yarn(nn.Module):
         return factor1 * x_BTHD + factor2 * x_flip
 
     def reset(self):
-        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim // 8, dtype=torch.float32, device=device)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim // 4, dtype=torch.float32, device=device)
         angular_freq = angular_freq.repeat_interleave(2)
-        # quarter RoPE - only 1/4 of dimensions get rotary embeddings
-        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(3 * self.head_dim // 4)])
+        # half-truncate RoPE by @YouJiacheng (w/ base freq tuning)
+        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(self.head_dim // 2)])
         t = torch.arange(2 * self.max_seq_len, dtype=torch.float32, device=device)
         theta = torch.outer(t, angular_freq)
         self.factor1 = nn.Buffer(
@@ -900,10 +900,9 @@ class YarnPairedHead(nn.Module):
         return factor1 * x_BTHD + factor2 * x_flip
 
     def reset(self):
-        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim // 8, dtype=torch.float32, device=device)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim // 4, dtype=torch.float32, device=device)
         angular_freq = angular_freq.repeat_interleave(2)
-        # quarter RoPE - only 1/4 of dimensions get rotary embeddings
-        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(3 * self.head_dim // 4)])
+        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(self.head_dim // 2)])
         t = torch.arange(2 * self.max_seq_len, dtype=torch.float32, device=device)
         t_even = 2 * t
         t_odd = 2 * t + 1
