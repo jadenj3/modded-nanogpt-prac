@@ -1065,11 +1065,11 @@ class MLP(nn.Module):
         super().__init__()
         # Weights are stored in parameter banks and passed via forward()
 
-    def forward(self, x: Tensor, mlp_up_embed: Tensor, c_proj: Tensor):
-        # mlp_up_embed replaces the linear up projection (x @ c_fc.T)
-        # Apply relu^2 to the embedding and project down
-        hidden = F.relu(mlp_up_embed).square()
-        return hidden @ c_proj
+    def forward(self, x: Tensor, c_fc: Tensor, c_proj: Tensor):
+        # relu(x)^2:
+        # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+        # Fused triton kernel for relu(x @ W1.T)^2 @ W2.T
+        return FusedLinearReLUSquareFunction.apply(x, c_fc, c_proj)
 
 
 class Block(nn.Module):
@@ -1086,12 +1086,12 @@ class Block(nn.Module):
         # skip MLP blocks for first MLP layer by @EmelyanenkoK
         self.mlp = MLP() if has_mlp else None
 
-    def forward(self, x: Tensor, attn_args: AttnArgs, qkvo_w: Tensor = None, mlp_up_embed: Tensor = None,
+    def forward(self, x: Tensor, attn_args: AttnArgs, qkvo_w: Tensor = None, c_fc: Tensor = None,
                 c_proj: Tensor = None):
         if self.attn is not None:
             x = x + self.attn(norm(x), attn_args, qkvo_w)
         if self.mlp is not None:
-            x = x + self.mlp(norm(x), mlp_up_embed, c_proj)
+            x = x + self.mlp(norm(x), c_fc, c_proj)
         return x
 
 
@@ -1131,14 +1131,6 @@ class GPT(nn.Module):
             nn.init.zeros_(embed.weight)
         for i, ve in enumerate(self.value_embeds):
             ve.weight.label = f've{i}'  # ve0, ve1, ve2
-
-        # MLP up projection embeddings - replaces c_fc linear with token-based lookup (one per MLP layer)
-        mlp_hdim = 4 * model_dim
-        self.mlp_up_embeds = nn.ModuleList([nn.Embedding(vocab_size, mlp_hdim) for _ in range(num_layers)])
-        for embed in self.mlp_up_embeds:
-            nn.init.zeros_(embed.weight)
-        for i, mue in enumerate(self.mlp_up_embeds):
-            mue.weight.label = f'mlp_up{i}'
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
@@ -1288,9 +1280,6 @@ class GPT(nn.Module):
         ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
         assert len(ve) == self.num_layers
 
-        # MLP up embeddings - one per layer, replaces c_fc linear projection
-        mlp_up = [embed(input_seq)[None] for embed in self.mlp_up_embeds]  # add batch dim
-
         # smear token embed forward 1 position @classiclarryd
         smear_gate_out = smear_lambda * torch.sigmoid(self.smear_gate(x[1:, :self.smear_gate.weight.size(-1)]))
         x = torch.cat([x[:1], x[1:] + smear_gate_out * x[:-1]])
@@ -1306,6 +1295,7 @@ class GPT(nn.Module):
 
         # unbind weight banks to avoid select_backwards kernel
         attn_weights = self.attn_bank.unbind(0)  # tuple of [4*dim, hdim] tensors
+        mlp_fcs = self.mlp_bank[:, 0, :, :].unbind(0)  # tuple of [mlp_hdim, dim] tensors
         mlp_projs = self.mlp_bank[:, 1, :, :].unbind(0)  # tuple of [mlp_hdim, dim] tensors
 
         for i in range(self.num_layers):
@@ -1331,10 +1321,10 @@ class GPT(nn.Module):
 
             # Get weights for this layer from banks
             qkvo_w = attn_weights[self.layer_to_attn_idx[i]] if i in self.layer_to_attn_idx else None
-            mlp_up_embed = mlp_up[i] if i in self.layer_to_mlp_idx else None
+            c_fc = mlp_fcs[self.layer_to_mlp_idx[i]] if i in self.layer_to_mlp_idx else None
             c_proj = mlp_projs[self.layer_to_mlp_idx[i]] if i in self.layer_to_mlp_idx else None
 
-            x = self.blocks[i](x, attn_args, qkvo_w, mlp_up_embed, c_proj)
+            x = self.blocks[i](x, attn_args, qkvo_w, c_fc, c_proj)
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
@@ -1662,16 +1652,12 @@ class TrainingManager():
             "lm_head": {"optim": "adam", "comms": "sharded", "adam_betas": [0.5, 0.95], "wd_mul": 150.},
             "embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.5, 0.95], "wd_mul": 150.},
         }
-        # Add MLP up embeddings (one per layer)
-        for i in range(11):
-            self.param_table[f"mlp_up{i}"] = {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0}
 
         # - Process smaller/faster params first while large reduces complete
         # - lm_head must complete before embed sync (when tied)
         self.work_order = [
             "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
             "ve0", "ve1", "ve2", "bigram_embed",  # Medium
-        ] + [f"mlp_up{i}" for i in range(11)] + [  # MLP up embeddings
             "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
             "attn", "mlp",  # Large, polar express - process last to maximize overlap
         ]
