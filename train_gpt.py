@@ -29,10 +29,20 @@ torch.empty(
 import torch._dynamo as dynamo
 import torch.distributed as dist
 import torch.nn.functional as F
+from torch import Tensor, nn
+
+try:
+    from sonicmoe import MoE, KernelBackendMoE
+    from sonicmoe.enums import ActivationType
+    _SONICMOE_AVAILABLE = True
+except ImportError:
+    MoE = None
+    KernelBackendMoE = None
+    ActivationType = None
+    _SONICMOE_AVAILABLE = False
 
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 from kernels import get_kernel
-from torch import Tensor, nn
 
 from triton_kernels import XXT, ba_plus_cAA, FusedLinearReLUSquareFunction, FusedSoftcappedCrossEntropy
 
@@ -1060,20 +1070,61 @@ class PairedHeadCausalSelfAttention(nn.Module):
         return y
 
 
+@dataclass
+class MoEConfig:
+    num_experts: int
+    num_experts_per_tok: int
+    hidden_size: int
+    intermediate_size: int
+    activation: str
+    add_bias: bool
+    std: float
+
+
 class MLP(nn.Module):
     def __init__(self):
         super().__init__()
         # Weights are stored in parameter banks and passed via forward()
 
-    def forward(self, x: Tensor, c_fc: Tensor, c_proj: Tensor):
+    def forward(self, x: Tensor, c_fc: Tensor | None = None, c_proj: Tensor | None = None) -> tuple[Tensor, Tensor | None]:
+        assert c_fc is not None and c_proj is not None
         # relu(x)^2:
         # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
         # Fused triton kernel for relu(x @ W1.T)^2 @ W2.T
-        return FusedLinearReLUSquareFunction.apply(x, c_fc, c_proj)
+        out = FusedLinearReLUSquareFunction.apply(x, c_fc, c_proj)
+        return out, None
+
+
+class SonicMoEMLP(nn.Module):
+    def __init__(self, config: MoEConfig):
+        super().__init__()
+        if not _SONICMOE_AVAILABLE:
+            raise RuntimeError("SonicMoE is not available; install it or disable args.use_sonic_moe.")
+        try:
+            activation = ActivationType[config.activation]
+        except KeyError as exc:
+            raise ValueError(f"Unknown SonicMoE activation: {config.activation}") from exc
+        self.moe = MoE(
+            num_experts=config.num_experts,
+            num_experts_per_tok=config.num_experts_per_tok,
+            hidden_size=config.hidden_size,
+            intermediate_size=config.intermediate_size,
+            activation_function=activation,
+            add_bias=config.add_bias,
+            std=config.std,
+        )
+
+    def forward(self, x: Tensor, *_):
+        x_shape = x.shape
+        x_flat = x.reshape(-1, x_shape[-1])
+        out, aux_loss = self.moe(x_flat, kernel_backend_moe=KernelBackendMoE.sonicmoe)
+        out = out.reshape(x_shape)
+        return out, aux_loss
 
 
 class Block(nn.Module):
-    def __init__(self, dim: int, head_dim: int, num_heads: int, has_attn: bool, has_mlp: bool, use_paired_head: bool):
+    def __init__(self, dim: int, head_dim: int, num_heads: int, has_attn: bool, has_mlp: bool,
+                 use_paired_head: bool, use_sonic_moe: bool, moe_config: MoEConfig | None):
         super().__init__()
         # skip attention of blocks.6 (the 7th layer) by @YouJiacheng
         if has_attn:
@@ -1084,15 +1135,24 @@ class Block(nn.Module):
         else:
             self.attn = None
         # skip MLP blocks for first MLP layer by @EmelyanenkoK
-        self.mlp = MLP() if has_mlp else None
+        if has_mlp:
+            if use_sonic_moe:
+                assert moe_config is not None
+                self.mlp = SonicMoEMLP(moe_config)
+            else:
+                self.mlp = MLP()
+        else:
+            self.mlp = None
 
-    def forward(self, x: Tensor, attn_args: AttnArgs, qkvo_w: Tensor = None, c_fc: Tensor = None,
-                c_proj: Tensor = None):
+    def forward(self, x: Tensor, attn_args: AttnArgs, qkvo_w: Tensor = None, c_fc: Tensor | None = None,
+                c_proj: Tensor | None = None):
+        aux_loss = None
         if self.attn is not None:
             x = x + self.attn(norm(x), attn_args, qkvo_w)
         if self.mlp is not None:
-            x = x + self.mlp(norm(x), c_fc, c_proj)
-        return x
+            mlp_out, aux_loss = self.mlp(norm(x), c_fc, c_proj)
+            x = x + mlp_out
+        return x, aux_loss
 
 
 # -----------------------------------------------------------------------------
@@ -1146,13 +1206,30 @@ class GPT(nn.Module):
         self.attn_layer_indices = [i for i in range(num_layers) if i != 6]
         # All layers have MLP (At 11 layers--dropped first layer @EmelyanenkoK)
         self.mlp_layer_indices = list(range(num_layers))
+        self.use_sonic_moe = args.use_sonic_moe
+        self.moe_config = None
+        if self.use_sonic_moe:
+            if not _SONICMOE_AVAILABLE:
+                raise RuntimeError("SonicMoE is not available; install it or disable args.use_sonic_moe.")
+            intermediate_size = args.moe_intermediate_size or (4 * model_dim)
+            self.moe_config = MoEConfig(
+                num_experts=args.moe_num_experts,
+                num_experts_per_tok=args.moe_num_experts_per_tok,
+                hidden_size=model_dim,
+                intermediate_size=intermediate_size,
+                activation=args.moe_activation,
+                add_bias=args.moe_add_bias,
+                std=args.moe_weight_std,
+            )
 
         hdim = num_heads * head_dim
-        mlp_hdim = 4 * model_dim
 
         # Create index mappings: layer_idx -> bank_idx
         self.layer_to_attn_idx = {layer_idx: bank_idx for bank_idx, layer_idx in enumerate(self.attn_layer_indices)}
-        self.layer_to_mlp_idx = {layer_idx: bank_idx for bank_idx, layer_idx in enumerate(self.mlp_layer_indices)}
+        self.layer_to_mlp_idx = (
+            {layer_idx: bank_idx for bank_idx, layer_idx in enumerate(self.mlp_layer_indices)}
+            if not self.use_sonic_moe else {}
+        )
 
         # Attention bank: stores QKVO weights for all attention layers
         # merged QKVO weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
@@ -1164,14 +1241,16 @@ class GPT(nn.Module):
         self.attn_bank.label = 'attn'
         self.attn_bank.reshape = (len(self.attn_layer_indices) * 4, hdim, hdim)  # (40, 768, 768)
 
-        # MLP bank: stores c_fc and c_proj for all MLP layers
-        # Shape: (num_mlp_layers + padding, 2, mlp_hdim, model_dim) = (12, 2, 3072, 768)
-        # We add 1 padding layer (index 11) to get 12*2=24 matrices for even distribution across 8 GPUs
-        # Reshape for sharding: (24, 3072, 768)
-        num_mlp_with_padding = len(self.mlp_layer_indices) + 1  # 11 + 1 = 12
-        self.mlp_bank = nn.Parameter(torch.empty(num_mlp_with_padding, 2, mlp_hdim, model_dim))
-        self.mlp_bank.label = 'mlp'
-        self.mlp_bank.reshape = (num_mlp_with_padding * 2, mlp_hdim, model_dim)  # (24, 3072, 768)
+        if not self.use_sonic_moe:
+            # MLP bank: stores c_fc and c_proj for all MLP layers
+            # Shape: (num_mlp_layers + padding, 2, mlp_hdim, model_dim) = (12, 2, 3072, 768)
+            # We add 1 padding layer (index 11) to get 12*2=24 matrices for even distribution across 8 GPUs
+            # Reshape for sharding: (24, 3072, 768)
+            mlp_hdim = 4 * model_dim
+            num_mlp_with_padding = len(self.mlp_layer_indices) + 1  # 11 + 1 = 12
+            self.mlp_bank = nn.Parameter(torch.empty(num_mlp_with_padding, 2, mlp_hdim, model_dim))
+            self.mlp_bank.label = 'mlp'
+            self.mlp_bank.reshape = (num_mlp_with_padding * 2, mlp_hdim, model_dim)  # (24, 3072, 768)
 
         # improved init scale by @YouJiacheng
         # Attention uses dim^-0.5, MLP uses 0.5 * dim^-0.5
@@ -1183,19 +1262,30 @@ class GPT(nn.Module):
             # Init attention bank (QKV uniform, O zero)
             self.attn_bank[:, :model_dim * 3, :].uniform_(-attn_bound, attn_bound)
             self.attn_bank[:, model_dim * 3:, :].zero_()
-            # Init MLP bank (c_fc uniform, c_proj zero)
-            self.mlp_bank[:, 0, :, :].uniform_(-mlp_bound, mlp_bound)  # c_fc
-            self.mlp_bank[:, 1, :, :].zero_()  # c_proj - zero init suggested by @Grad62304977
+            if not self.use_sonic_moe:
+                # Init MLP bank (c_fc uniform, c_proj zero)
+                self.mlp_bank[:, 0, :, :].uniform_(-mlp_bound, mlp_bound)  # c_fc
+                self.mlp_bank[:, 1, :, :].zero_()  # c_proj - zero init suggested by @Grad62304977
 
         # Create blocks with has_attn/has_mlp flags
         self.paired_head_layers = [0, 2, 5, 9]
         self.blocks = nn.ModuleList([
             Block(model_dim, head_dim, num_heads,
                   has_attn=(i in self.layer_to_attn_idx),
-                  has_mlp=(i in self.layer_to_mlp_idx),
-                  use_paired_head=(i in self.paired_head_layers))
+                  has_mlp=(i in self.mlp_layer_indices),
+                  use_paired_head=(i in self.paired_head_layers),
+                  use_sonic_moe=self.use_sonic_moe,
+                  moe_config=self.moe_config)
             for i in range(num_layers)
         ])
+        if self.use_sonic_moe:
+            for layer_idx, block in enumerate(self.blocks):
+                if block.mlp is None:
+                    continue
+                for name, param in block.mlp.named_parameters():
+                    label = f"moe_{layer_idx}_{name.replace('.', '_')}"
+                    param.label = label
+
         self.yarn = Yarn(head_dim, max_seq_len)
         self.yarn_paired_head = YarnPairedHead(head_dim, max_seq_len)
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
@@ -1295,9 +1385,14 @@ class GPT(nn.Module):
 
         # unbind weight banks to avoid select_backwards kernel
         attn_weights = self.attn_bank.unbind(0)  # tuple of [4*dim, hdim] tensors
-        mlp_fcs = self.mlp_bank[:, 0, :, :].unbind(0)  # tuple of [mlp_hdim, dim] tensors
-        mlp_projs = self.mlp_bank[:, 1, :, :].unbind(0)  # tuple of [mlp_hdim, dim] tensors
+        if not self.use_sonic_moe:
+            mlp_fcs = self.mlp_bank[:, 0, :, :].unbind(0)  # tuple of [mlp_hdim, dim] tensors
+            mlp_projs = self.mlp_bank[:, 1, :, :].unbind(0)  # tuple of [mlp_hdim, dim] tensors
+        else:
+            mlp_fcs = None
+            mlp_projs = None
 
+        moe_aux_loss = None
         for i in range(self.num_layers):
             yarn = self.yarn_paired_head if i in self.paired_head_layers else self.yarn
             attn_args = AttnArgs(
@@ -1321,10 +1416,15 @@ class GPT(nn.Module):
 
             # Get weights for this layer from banks
             qkvo_w = attn_weights[self.layer_to_attn_idx[i]] if i in self.layer_to_attn_idx else None
-            c_fc = mlp_fcs[self.layer_to_mlp_idx[i]] if i in self.layer_to_mlp_idx else None
-            c_proj = mlp_projs[self.layer_to_mlp_idx[i]] if i in self.layer_to_mlp_idx else None
+            c_fc = None
+            c_proj = None
+            if not self.use_sonic_moe and i in self.layer_to_mlp_idx:
+                c_fc = mlp_fcs[self.layer_to_mlp_idx[i]]
+                c_proj = mlp_projs[self.layer_to_mlp_idx[i]]
 
-            x = self.blocks[i](x, attn_args, qkvo_w, c_fc, c_proj)
+            x, block_aux_loss = self.blocks[i](x, attn_args, qkvo_w, c_fc, c_proj)
+            if block_aux_loss is not None:
+                moe_aux_loss = block_aux_loss if moe_aux_loss is None else moe_aux_loss + block_aux_loss
             if i in skip_in:
                 skip_connections.append(x)
             if i == backout_layer:
@@ -1339,6 +1439,8 @@ class GPT(nn.Module):
         if self.training:
             losses = FusedSoftcappedCrossEntropy.apply(logits.view(-1, logits.size(-1)), target_seq, mtp_weights)
             loss = losses.sum()
+            if moe_aux_loss is not None:
+                loss = loss + args.moe_aux_loss_weight * moe_aux_loss.to(loss.dtype)
         else:
             logits = 23 * torch.sigmoid((logits + 5) / 7.5)
             logits_for_loss = logits.float()
@@ -1631,36 +1733,8 @@ class TrainingManager():
         # - Ordering dictates when to launch reduce/reduce_scatter operations
         # - "sharded" parameters use reduce_scatter/all_gather and "replicated" ones use all_reduce
         # - lr_mul and wd_mul are per-parameter learning rate and weight decay multipliers
-        self.param_table = {
-            "attn": {"optim": "normuon", "comms": "sharded", "adam_betas": None},
-            "mlp": {"optim": "normuon", "comms": "sharded", "adam_betas": None},
-            "scalars": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 5.0,
-                        "wd_mul": 0.0},
-            "ve0": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
-            "ve1": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
-            "ve2": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
-            "bigram_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
-                             "wd_mul": 5.0},
-            "smear_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.01,
-                           "wd_mul": 0.0},
-            "skip_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.05,
-                          "wd_mul": 0.0},
-            "attn_gate_bank": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99]},
-            "ve_gate_bank": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99]},
-            "x0_lambdas": {"optim": "adam", "comms": "replicated", "adam_betas": [0.65, 0.95], "lr_mul": 5.0,
-                           "wd_mul": 0.0},
-            "lm_head": {"optim": "adam", "comms": "sharded", "adam_betas": [0.5, 0.95], "wd_mul": 150.},
-            "embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.5, 0.95], "wd_mul": 150.},
-        }
-
-        # - Process smaller/faster params first while large reduces complete
-        # - lm_head must complete before embed sync (when tied)
-        self.work_order = [
-            "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
-            "ve0", "ve1", "ve2", "bigram_embed",  # Medium
-            "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
-            "attn", "mlp",  # Large, polar express - process last to maximize overlap
-        ]
+        self.param_table = self._build_param_table(model)
+        self.work_order = self._build_work_order(self.param_table)
 
         adam_defaults = dict(
             lr=0.008,
@@ -1688,6 +1762,71 @@ class TrainingManager():
         self.split_step = math.ceil(args.split_embed_frac * args.num_scheduled_iterations) | 1
 
         self.reset()
+
+    def _build_param_table(self, model: nn.Module) -> dict:
+        param_table = {
+            "attn": {"optim": "normuon", "comms": "sharded", "adam_betas": None},
+            "scalars": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 5.0,
+                        "wd_mul": 0.0},
+            "ve0": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve1": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve2": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "bigram_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
+                             "wd_mul": 5.0},
+            "smear_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.01,
+                           "wd_mul": 0.0},
+            "skip_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.05,
+                          "wd_mul": 0.0},
+            "attn_gate_bank": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99]},
+            "ve_gate_bank": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99]},
+            "x0_lambdas": {"optim": "adam", "comms": "replicated", "adam_betas": [0.65, 0.95], "lr_mul": 5.0,
+                           "wd_mul": 0.0},
+            "lm_head": {"optim": "adam", "comms": "sharded", "adam_betas": [0.5, 0.95], "wd_mul": 150.},
+            "embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.5, 0.95], "wd_mul": 150.},
+        }
+        if not getattr(model, "use_sonic_moe", False):
+            param_table["mlp"] = {"optim": "normuon", "comms": "sharded", "adam_betas": None}
+
+        label_to_param: dict[str, nn.Parameter] = {}
+        for param in model.parameters():
+            label = getattr(param, "label", None)
+            if label is None:
+                raise ValueError("All parameters must define a .label attribute")
+            if label in label_to_param:
+                raise ValueError(f"Duplicate parameter label: {label}")
+            label_to_param[label] = param
+
+        missing_labels = [label for label in label_to_param.keys() if label not in param_table]
+        if missing_labels:
+            world_size = dist.get_world_size() if dist.is_initialized() else 1
+            for label in sorted(missing_labels):
+                param = label_to_param[label]
+                comms = args.moe_comms
+                if comms == "sharded":
+                    if param.ndim == 0 or param.shape[0] % world_size != 0:
+                        comms = "replicated"
+                param_table[label] = {
+                    "optim": "adam",
+                    "comms": comms,
+                    "adam_betas": list(args.moe_adam_betas),
+                    "lr_mul": args.moe_lr_mul,
+                    "wd_mul": args.moe_wd_mul,
+                }
+        return param_table
+
+    def _build_work_order(self, param_table: dict) -> list[str]:
+        base_order = [
+            "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
+            "ve0", "ve1", "ve2", "bigram_embed",  # Medium
+            "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
+        ]
+        if "attn" in param_table:
+            base_order.append("attn")
+        if "mlp" in param_table:
+            base_order.append("mlp")
+        extra_labels = [label for label in param_table.keys() if label not in base_order]
+        insert_idx = base_order.index("attn") if "attn" in base_order else len(base_order)
+        return base_order[:insert_idx] + extra_labels + base_order[insert_idx:]
 
     def _build_mtp_schedule(self):
         # Precompute MTP weights for all steps to avoid tensor allocation during training
@@ -1798,6 +1937,19 @@ class Hyperparameters:
     num_iterations: int = num_scheduled_iterations + num_extension_iterations
     cooldown_frac: float = 0.55  # fraction of num_scheduled_iterations spent cooling down the learning rate
     split_embed_frac: float = 2 / 3  # fraction of training when embeddings split from lm_head
+    # sonic-moe
+    use_sonic_moe: bool = True
+    moe_num_experts: int = 128
+    moe_num_experts_per_tok: int = 8
+    moe_intermediate_size: int | None = None
+    moe_activation: str = "SWIGLU"
+    moe_add_bias: bool = False
+    moe_weight_std: float = 0.02
+    moe_aux_loss_weight: float = 0.01
+    moe_comms: str = "replicated"  # replicated or sharded
+    moe_adam_betas: tuple[float, float] = (0.9, 0.99)
+    moe_lr_mul: float = 1.0
+    moe_wd_mul: float = 1.0
     # evaluation and logging
     run_id: str = f"{uuid.uuid4()}"
     val_loss_every: int = 250  # every how many steps to evaluate val loss? 0 for only at the end
@@ -1874,10 +2026,15 @@ model: nn.Module = GPT(
 for m in model.modules():
     if isinstance(m, (nn.Embedding, nn.Linear)):
         m.weight.data = m.weight.data.bfloat16()
+if getattr(model, "use_sonic_moe", False):
+    for param in model.parameters():
+        if getattr(param, "label", "").startswith("moe_"):
+            param.data = param.data.bfloat16()
 model.attn_gate_bank.data = model.attn_gate_bank.data.bfloat16()
 model.ve_gate_bank.data = model.ve_gate_bank.data.bfloat16()
 model.attn_bank.data = model.attn_bank.data.bfloat16()
-model.mlp_bank.data = model.mlp_bank.data.bfloat16()
+if hasattr(model, "mlp_bank"):
+    model.mlp_bank.data = model.mlp_bank.data.bfloat16()
 for param in model.parameters():
     dist.broadcast(param.detach(), 0)
 

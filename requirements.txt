@@ -1,6 +1,7 @@
 numpy
 tqdm
 torch
+sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git
 huggingface-hub
 kernels
 setuptools
