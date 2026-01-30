@@ -1927,10 +1927,10 @@ class Hyperparameters:
     val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
     val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # batch sizes
-    train_bs_schedule: tuple = (8 * 2048 * 4, 16 * 2048 * 4, 24 * 2048 * 4)
-    train_bs_extension: int = 24 * 2048 * 4
+    train_bs_schedule: tuple = (8 * 2048 * 8, 16 * 2048 * 8, 24 * 2048 * 8)
+    train_bs_extension: int = 24 * 2048 * 8
     train_max_seq_len: int = 128 * 16
-    val_batch_size: int = 4 * 64 * 1024 * 4
+    val_batch_size: int = 4 * 64 * 1024 * 8
     # optimization
     num_scheduled_iterations: int = 260  # number of steps to complete lr and ws schedule
     num_extension_iterations: int = 40  # number of steps to continue training at final lr and ws
@@ -1939,8 +1939,8 @@ class Hyperparameters:
     split_embed_frac: float = 2 / 3  # fraction of training when embeddings split from lm_head
     # sonic-moe
     use_sonic_moe: bool = True
-    moe_num_experts: int = 16
-    moe_num_experts_per_tok: int = 2
+    moe_num_experts: int = 1
+    moe_num_experts_per_tok: int = 1
     moe_intermediate_size: int | None = None
     moe_activation: str = "SWIGLU"
     moe_add_bias: bool = False
