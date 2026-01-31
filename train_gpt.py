@@ -36,6 +36,15 @@ from torch import Tensor, nn
 
 from triton_kernels import XXT, ba_plus_cAA, FusedLinearReLUSquareFunction, FusedSoftcappedCrossEntropy
 
+# Set seed for reproducibility
+import random
+import numpy as np
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+torch.cuda.manual_seed_all(42)
+
 dynamo.config.recompile_limit = 64
 
 
