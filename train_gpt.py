@@ -36,15 +36,6 @@ from torch import Tensor, nn
 
 from triton_kernels import XXT, ba_plus_cAA, FusedLinearReLUSquareFunction, FusedSoftcappedCrossEntropy
 
-# Set seed for reproducibility
-import random
-import numpy as np
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-torch.cuda.manual_seed_all(42)
-
 dynamo.config.recompile_limit = 64
 
 
@@ -853,7 +844,7 @@ class Yarn(nn.Module):
         return factor1 * x_BTHD + factor2 * x_flip
 
     def reset(self):
-        angular_freq = torch.linspace(1.0, 1/1024, steps=self.head_dim // 4, dtype=torch.float32, device=device)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim // 4, dtype=torch.float32, device=device)
         angular_freq = angular_freq.repeat_interleave(2)
         # half-truncate RoPE by @YouJiacheng (w/ base freq tuning)
         angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(self.head_dim // 2)])
@@ -900,7 +891,7 @@ class YarnPairedHead(nn.Module):
         return factor1 * x_BTHD + factor2 * x_flip
 
     def reset(self):
-        angular_freq = torch.linspace(1.0, 1/1024, steps=self.head_dim // 4, dtype=torch.float32, device=device)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim // 4, dtype=torch.float32, device=device)
         angular_freq = angular_freq.repeat_interleave(2)
         angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(self.head_dim // 2)])
         t = torch.arange(2 * self.max_seq_len, dtype=torch.float32, device=device)
@@ -1096,6 +1087,57 @@ class Block(nn.Module):
 
 
 # -----------------------------------------------------------------------------
+# Mimetic V-O Initialization (Trockman & Kolter, ICML 2023)
+# Initialize V and O such that V @ O^T ≈ -βI (negative identity-like)
+# This enables attention to make meaningful contributions from step 1
+
+def mimetic_vo_init(attn_bank, model_dim=768, num_heads=6, head_dim=128, beta=0.1, noise_std=0.01):
+    """
+    Initialize attention bank with mimetic structure for V and O.
+    Q and K use standard uniform init, V and O use identity-like structure.
+
+    Args:
+        attn_bank: Tensor of shape (num_layers, 4*model_dim, hdim)
+        model_dim: Model dimension (768)
+        num_heads: Number of attention heads (6)
+        head_dim: Dimension per head (128)
+        beta: Scale for identity structure (0.1 recommended with attn_scale=0.1)
+        noise_std: Standard deviation of noise for symmetry breaking
+    """
+    num_layers = attn_bank.shape[0]
+    dim = model_dim
+    sqrt_beta = beta ** 0.5
+
+    # Standard init for Q and K (existing behavior)
+    attn_std = model_dim ** -0.5
+    attn_bound = (3 ** 0.5) * attn_std
+
+    with torch.no_grad():
+        # Q and K: uniform init (first 2*dim rows)
+        attn_bank[:, :2 * dim, :].uniform_(-attn_bound, attn_bound)
+
+        # V and O: mimetic identity structure
+        for layer_idx in range(num_layers):
+            W_V = torch.zeros(dim, dim, dtype=attn_bank.dtype, device=attn_bank.device)
+            W_O = torch.zeros(dim, dim, dtype=attn_bank.dtype, device=attn_bank.device)
+
+            # Create per-head identity blocks
+            for h in range(num_heads):
+                start, end = h * head_dim, (h + 1) * head_dim
+                eye = torch.eye(head_dim, dtype=attn_bank.dtype, device=attn_bank.device)
+                W_V[start:end, start:end] = sqrt_beta * eye
+                W_O[start:end, start:end] = -sqrt_beta * eye
+
+            # Add noise for symmetry breaking
+            W_V += noise_std * torch.randn_like(W_V)
+            W_O += noise_std * torch.randn_like(W_O)
+
+            # Store in attn_bank: V is rows [2*dim:3*dim], O is rows [3*dim:4*dim]
+            attn_bank[layer_idx, 2 * dim:3 * dim, :] = W_V
+            attn_bank[layer_idx, 3 * dim:4 * dim, :] = W_O
+
+
+# -----------------------------------------------------------------------------
 # The main model
 
 def next_multiple_of_n(v: float | int, *, n: int):
@@ -1126,16 +1168,16 @@ class GPT(nn.Module):
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(5)])
         for embed in self.value_embeds:
             nn.init.zeros_(embed.weight)
         for i, ve in enumerate(self.value_embeds):
-            ve.weight.label = f've{i}'  # ve0, ve1, ve2
+            ve.weight.label = f've{i}'  # ve0, ve1, ve2, ve3, ve4
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
         self.attn_gate_bank.label = 'attn_gate_bank'
-        self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 layers
+        self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 unique gates
         self.ve_gate_bank.label = 've_gate_bank'
 
         # -----------------------------------
@@ -1174,15 +1216,20 @@ class GPT(nn.Module):
         self.mlp_bank.reshape = (num_mlp_with_padding * 2, mlp_hdim, model_dim)  # (24, 3072, 768)
 
         # improved init scale by @YouJiacheng
-        # Attention uses dim^-0.5, MLP uses 0.5 * dim^-0.5
-        attn_std = model_dim ** -0.5
-        attn_bound = (3 ** 0.5) * attn_std
+        # MLP uses 0.5 * dim^-0.5
         mlp_std = 0.5 * (model_dim ** -0.5)
         mlp_bound = (3 ** 0.5) * mlp_std
         with torch.no_grad():
-            # Init attention bank (QKV uniform, O zero)
-            self.attn_bank[:, :model_dim * 3, :].uniform_(-attn_bound, attn_bound)
-            self.attn_bank[:, model_dim * 3:, :].zero_()
+            # Init attention bank with MIMETIC V-O initialization
+            # Q and K: uniform init, V and O: identity-like structure for faster convergence
+            mimetic_vo_init(
+                self.attn_bank,
+                model_dim=model_dim,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                beta=0.05,  # Scale for V@O^T ≈ -βI (tuned down from 0.1)
+                noise_std=0.01  # Symmetry breaking noise
+            )
             # Init MLP bank (c_fc uniform, c_proj zero)
             self.mlp_bank[:, 0, :, :].uniform_(-mlp_bound, mlp_bound)  # c_fc
             self.mlp_bank[:, 1, :, :].zero_()  # c_proj - zero init suggested by @Grad62304977
@@ -1275,9 +1322,8 @@ class GPT(nn.Module):
 
         # Value embeddings - always computed (not precomputed)
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
-        # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        # dropping first layer updates this to .12 ... 012
-        ve = [ve[1], ve[2]] + [None] * (self.num_layers - 5) + [ve[0], ve[1], ve[2]]
+        # 01 ... 234 structure on token value embeddings by @photomz
+        ve = [ve[0], ve[1]] + [None] * (self.num_layers - 5) + [ve[2], ve[3], ve[4]]
         assert len(ve) == self.num_layers
 
         # smear token embed forward 1 position @classiclarryd
@@ -1639,6 +1685,8 @@ class TrainingManager():
             "ve0": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "ve1": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "ve2": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve3": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve4": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "bigram_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
                              "wd_mul": 5.0},
             "smear_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.01,
@@ -1657,7 +1705,7 @@ class TrainingManager():
         # - lm_head must complete before embed sync (when tied)
         self.work_order = [
             "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
-            "ve0", "ve1", "ve2", "bigram_embed",  # Medium
+            "ve0", "ve1", "ve2", "ve3", "ve4", "bigram_embed",  # Medium
             "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
             "attn", "mlp",  # Large, polar express - process last to maximize overlap
         ]
@@ -1784,8 +1832,8 @@ class TrainingManager():
 @dataclass
 class Hyperparameters:
     # data
-    train_files: str = "data/fineweb10B/fineweb_train_*.bin"  # input .bin to train on
-    val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
+    train_files: str = "data/fineweb/fineweb_train_*.bin"  # input .bin to train on
+    val_files: str = "data/fineweb/fineweb_val_*.bin"  # input .bin to eval validation loss on
     val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # batch sizes
     train_bs_schedule: tuple = (8 * 2048 * 8, 16 * 2048 * 8, 24 * 2048 * 8)
@@ -1793,7 +1841,7 @@ class Hyperparameters:
     train_max_seq_len: int = 128 * 16
     val_batch_size: int = 4 * 64 * 1024 * 8
     # optimization
-    num_scheduled_iterations: int = 1700  # number of steps to complete lr and ws schedule
+    num_scheduled_iterations: int = 1515  # number of steps to complete lr and ws schedule
     num_extension_iterations: int = 40  # number of steps to continue training at final lr and ws
     num_iterations: int = num_scheduled_iterations + num_extension_iterations
     cooldown_frac: float = 0.55  # fraction of num_scheduled_iterations spent cooling down the learning rate
