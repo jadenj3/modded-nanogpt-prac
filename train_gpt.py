@@ -1875,6 +1875,9 @@ data_path = os.environ.get("DATA_PATH", ".")
 args.train_files = os.path.join(data_path, args.train_files)
 args.val_files = os.path.join(data_path, args.val_files)
 
+# Default device for imports/eval (overridden in __main__ for distributed training)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 if __name__ == "__main__":
     # torchrun sets these env variables
     rank = int(os.environ["RANK"])
