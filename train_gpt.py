@@ -986,7 +986,11 @@ class CausalSelfAttention(nn.Module):
             ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T, self.num_heads, 1)
             v = v + ve_gate_out * ve.view_as(v)  # @ KoszarskyB & @Grad62304977
 
-        max_len = args.train_max_seq_len if self.training else (args.val_batch_size // (grad_accum_steps * world_size))
+        # Use actual sequence length for inference, training uses fixed max
+        if self.training:
+            max_len = args.train_max_seq_len
+        else:
+            max_len = int(seqlens[-1].item())  # actual sequence length
 
         # use flash_attn over flex_attn @varunneal. flash_attn_varlen suggested by @YouJiacheng
         y = flash_attn_interface.flash_attn_varlen_func(q[0], k[0], v[0], cu_seqlens_q=seqlens, cu_seqlens_k=seqlens,
@@ -1044,7 +1048,11 @@ class PairedHeadCausalSelfAttention(nn.Module):
             ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T * 2, self.num_heads // 2, 1)
             v = v + ve_gate_out * ve.view_as(v)
 
-        max_len = args.train_max_seq_len if self.training else (args.val_batch_size // (grad_accum_steps * world_size))
+        # Use actual sequence length for inference, training uses fixed max
+        if self.training:
+            max_len = args.train_max_seq_len
+        else:
+            max_len = int(seqlens[-1].item())  # actual sequence length
 
         # paired head correction
         seqlens = 2 * seqlens
