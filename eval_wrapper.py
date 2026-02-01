@@ -76,7 +76,7 @@ class InferenceWrapper:
             seqlens = torch.tensor([T_padded], device=device, dtype=torch.int32)
 
             # Forward pass - returns (loss, logits)
-            with torch.no_grad():
+            with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 _, logits = self.model(
                     seq.to(torch.int32),
                     dummy_target,
