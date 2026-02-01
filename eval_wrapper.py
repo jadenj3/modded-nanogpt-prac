@@ -154,7 +154,7 @@ if __name__ == "__main__":
     model, tokenizer = load_for_eval(checkpoint_path)
 
     # Test inference - use longer text to avoid padding issues
-    text = "The quick brown fox jumps over the lazy dog. " * 10  # ~90 tokens
+    text = "The quick brown fox jumps over the lazy "  # ~90 tokens
     input_ids = tokenizer(text, return_tensors="pt").input_ids.cuda()
     print(f"Input tokens: {input_ids.shape[1]}")
 
