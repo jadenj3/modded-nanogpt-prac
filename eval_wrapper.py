@@ -163,7 +163,14 @@ if __name__ == "__main__":
     print(f"Input shape: {input_ids.shape}")
     print(f"Output logits shape: {logits.shape}")
 
+    # Check top-k predictions
+    probs = torch.softmax(logits[0, -1].float(), dim=-1)
+    top_k = torch.topk(probs, k=10)
+    print("\nTop 10 predictions:")
+    for i, (prob, idx) in enumerate(zip(top_k.values, top_k.indices)):
+        print(f"  {i+1}. '{tokenizer.decode([idx])}' ({prob:.4f})")
+
     # Get next token prediction
     next_token_id = logits[0, -1].argmax().item()
     next_token = tokenizer.decode([next_token_id])
-    print(f"Next token prediction: '{next_token}'")
+    print(f"\nNext token prediction: '{next_token}'")
