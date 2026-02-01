@@ -12,7 +12,11 @@ import torch
 from dataclasses import dataclass
 
 # Import from train_gpt (now safe since training code is in __main__ block)
-from train_gpt import GPT, ForwardScheduleConfig, get_bigram_hash, args
+from train_gpt import GPT, ForwardScheduleConfig, get_bigram_hash, args, ParamConfig
+
+# Make ParamConfig available in __main__ for torch.load unpickling
+import sys
+sys.modules['__main__'].ParamConfig = ParamConfig
 
 
 @dataclass
