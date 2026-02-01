@@ -121,6 +121,16 @@ def load_for_eval(checkpoint_path, device="cuda"):
     ).to(device)
 
     model.load_state_dict(model_data)
+
+    # Convert to bfloat16 to match training
+    for m in model.modules():
+        if isinstance(m, (torch.nn.Embedding, torch.nn.Linear)):
+            m.weight.data = m.weight.data.bfloat16()
+    model.attn_gate_bank.data = model.attn_gate_bank.data.bfloat16()
+    model.ve_gate_bank.data = model.ve_gate_bank.data.bfloat16()
+    model.attn_bank.data = model.attn_bank.data.bfloat16()
+    model.mlp_bank.data = model.mlp_bank.data.bfloat16()
+
     model.eval()
 
     # Wrap for inference interface
