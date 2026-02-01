@@ -993,12 +993,10 @@ class CausalSelfAttention(nn.Module):
             max_len = int(seqlens[-1].item())  # actual sequence length
 
         # use flash_attn over flex_attn @varunneal. flash_attn_varlen suggested by @YouJiacheng
-        # Use full causal attention for inference to avoid FA3 config issues with large window_size
-        window = (bm_size, 0) if self.training else (-1, -1)
         y = flash_attn_interface.flash_attn_varlen_func(q[0], k[0], v[0], cu_seqlens_q=seqlens, cu_seqlens_k=seqlens,
                                                         max_seqlen_q=max_len, max_seqlen_k=max_len,
                                                         causal=True, softmax_scale=yarn.attn_scale,
-                                                        window_size=window)
+                                                        window_size=(bm_size, 0))
         y = y.view(B, T, self.num_heads, self.head_dim)
         y = y * torch.sigmoid(F.linear(x[..., :12], attn_gate_w)).view(B, T, self.num_heads, 1)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim)  # re-assemble all head outputs side by side
@@ -1060,12 +1058,10 @@ class PairedHeadCausalSelfAttention(nn.Module):
         seqlens = 2 * seqlens
         max_len = 2 * max_len
 
-        # Use full causal attention for inference to avoid FA3 config issues with large window_size
-        window = (bm_size, 0) if self.training else (-1, -1)
         y = flash_attn_interface.flash_attn_varlen_func(q[0], k[0], v[0], cu_seqlens_q=seqlens, cu_seqlens_k=seqlens,
                                                         max_seqlen_q=max_len, max_seqlen_k=max_len,
                                                         causal=True, softmax_scale=yarn.attn_scale,
-                                                        window_size=window)
+                                                        window_size=(bm_size, 0))
         y = y.view(B, T, self.num_heads, self.head_dim)
         y = y * torch.sigmoid(F.linear(x[..., :12], attn_gate_w)).view(B, T, self.num_heads, 1)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim)
