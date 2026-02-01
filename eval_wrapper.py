@@ -72,8 +72,8 @@ class InferenceWrapper:
             # Dummy target (we ignore the loss)
             dummy_target = seq.to(torch.int64)
 
-            # seqlens for single sequence
-            seqlens = torch.tensor([T_padded], device=device, dtype=torch.int32)
+            # seqlens for single sequence - cumulative format [0, T] for flash_attn_varlen
+            seqlens = torch.tensor([0, T_padded], device=device, dtype=torch.int32)
 
             # Forward pass - returns (loss, logits)
             with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
