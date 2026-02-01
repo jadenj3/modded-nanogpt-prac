@@ -1878,6 +1878,10 @@ args.val_files = os.path.join(data_path, args.val_files)
 # Default device for imports/eval (overridden in __main__ for distributed training)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Defaults for eval - read from env if set, otherwise single-GPU defaults
+world_size = int(os.environ.get("WORLD_SIZE", "1"))
+grad_accum_steps = 8 // world_size
+
 if __name__ == "__main__":
     # torchrun sets these env variables
     rank = int(os.environ["RANK"])

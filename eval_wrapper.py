@@ -8,6 +8,12 @@ Usage:
     input_ids = tokenizer("Hello world", return_tensors="pt").input_ids.cuda()
     logits = model(input_ids)  # [B, T] -> [B, T, vocab_size]
 """
+import os
+
+# Set up single-GPU environment before importing train_gpt
+os.environ.setdefault("WORLD_SIZE", "1")
+os.environ.setdefault("RANK", "0")
+
 import torch
 from dataclasses import dataclass
 
@@ -48,9 +54,17 @@ class InferenceWrapper:
         B, T = input_ids.shape
         device = input_ids.device
 
+        # Pad to multiple of 16 (required by attention reshaping)
+        pad_len = (16 - T % 16) % 16
+        T_padded = T + pad_len
+
         all_logits = []
         for b in range(B):
             seq = input_ids[b]  # [T]
+
+            # Pad sequence if needed
+            if pad_len > 0:
+                seq = torch.cat([seq, seq[-1:].expand(pad_len)])
 
             # Compute bigram hash
             bigram_seq = get_bigram_hash(seq)
@@ -59,7 +73,7 @@ class InferenceWrapper:
             dummy_target = seq.to(torch.int64)
 
             # seqlens for single sequence
-            seqlens = torch.tensor([T], device=device, dtype=torch.int32)
+            seqlens = torch.tensor([T_padded], device=device, dtype=torch.int32)
 
             # Forward pass - returns (loss, logits)
             with torch.no_grad():
@@ -70,6 +84,9 @@ class InferenceWrapper:
                     bigram_seq.to(device),
                     self.schedule_cfg
                 )
+
+            # Remove padding from logits
+            logits = logits[:T]
             all_logits.append(logits)
 
         # Stack to [B, T, vocab_size]
