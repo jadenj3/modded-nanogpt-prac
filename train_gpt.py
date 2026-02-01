@@ -23,9 +23,10 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 import triton
 
-torch.empty(
-    1, device=f"cuda:{os.environ['LOCAL_RANK']}", requires_grad=True
-).backward()  # prevents a bug on some systems
+if "LOCAL_RANK" in os.environ:
+    torch.empty(
+        1, device=f"cuda:{os.environ['LOCAL_RANK']}", requires_grad=True
+    ).backward()  # prevents a bug on some systems
 import torch._dynamo as dynamo
 import torch.distributed as dist
 import torch.nn.functional as F
