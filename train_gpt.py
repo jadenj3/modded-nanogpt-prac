@@ -2063,15 +2063,10 @@ if __name__ == "__main__":
                    training_manager.get_forward_args())[0] / grad_accum_steps).backward()
         training_manager.step_optimizers(step)
 
-        # Byte embedding sanity check at step 10
-        if step == 10 and master_process:
+        # Byte embedding sanity check at steps 5, 15, 50
+        if step in [5, 15, 50] and master_process:
             be = model.byte_embed.weight.data
-            print(f"[byte_embed] weight mean: {be.mean():.6f}, std: {be.std():.6f}")
-            grad = model.byte_embed.weight.grad
-            if grad is not None:
-                print(f"[byte_embed] grad norm: {grad.norm():.6f}, nonzero: {(grad != 0).sum().item()}")
-            else:
-                print("[byte_embed] grad is None")
+            print(f"[step {step}] byte_embed weight norm: {be.norm():.6f}, mean: {be.mean():.6f}, std: {be.std():.6f}")
 
         # logging
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
