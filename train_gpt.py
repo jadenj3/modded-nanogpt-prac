@@ -1368,7 +1368,7 @@ class GPT(nn.Module):
         byte_embeds = norm(byte_embeds)  # RMS norm to handle variance from summing
 
         # Embedding lookup - embed is synced from lm_head during tied phase by optimizer
-        x = self.embed(input_seq) + byte_embeds # : seq_len, model_dim
+        x = 0.5 * self.embed(input_seq) + 0.5 * byte_embeds # : seq_len, model_dim
         x0_bigram = self.bigram_embed(bigram_input_seq)[None]
 
 
