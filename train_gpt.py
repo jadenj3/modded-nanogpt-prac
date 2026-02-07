@@ -1368,14 +1368,14 @@ class GPT(nn.Module):
         byte_embeds = norm(byte_embeds)  # RMS norm to handle variance from summing
 
         # Embedding lookup - embed is synced from lm_head during tied phase by optimizer
-        x = 0.5 * self.embed(input_seq) + 0.5 * byte_embeds # : seq_len, model_dim
+        x = self.embed(input_seq) # : seq_len, model_dim
         x0_bigram = self.bigram_embed(bigram_input_seq)[None]
 
 
         # Value embeddings - always computed (not precomputed)
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 01 ... 234 structure on token value embeddings by @photomz
-        ve = [ve[0], ve[1]] + [None] * (self.num_layers - 5) + [ve[2], ve[3], ve[4]]
+        ve = [ve[0] + byte_embeds, ve[1] + byte_embeds] + [None] * (self.num_layers - 5) + [ve[2] + byte_embeds, ve[3] + byte_embeds, ve[4] + byte_embeds]
         assert len(ve) == self.num_layers
 
         # smear token embed forward 1 position @classiclarryd
