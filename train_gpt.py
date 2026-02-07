@@ -837,6 +837,26 @@ class CastedLinearT(nn.Module):
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the model
 
+class Rotary(nn.Module):
+    """Simple rotary position embedding for byte positions."""
+    def __init__(self, dim: int, max_seq_len: int):
+        super().__init__()
+        # half-truncate RoPE by @YouJiacheng (w/ base freq tuning)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=dim//4, dtype=torch.float32)
+        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(dim//4)])
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        theta = torch.einsum("i,j -> ij", t, angular_freq)
+        self.cos = nn.Buffer(theta.cos(), persistent=False)
+        self.sin = nn.Buffer(theta.sin(), persistent=False)
+
+    def forward(self, x_BTHD: Tensor):
+        assert self.cos.size(0) >= x_BTHD.size(-3)
+        cos, sin = self.cos[None, :x_BTHD.size(-3), None, :], self.sin[None, :x_BTHD.size(-3), None, :]
+        x1, x2 = x_BTHD.to(dtype=torch.float32).chunk(2, dim=-1)
+        y1 = x1 * cos + x2 * sin
+        y2 = x1 * (-sin) + x2 * cos
+        return torch.cat((y1, y2), 3).type_as(x_BTHD)
+
 class Yarn(nn.Module):
     def __init__(self, head_dim, max_seq_len):
         super().__init__()
@@ -1188,6 +1208,7 @@ class GPT(nn.Module):
         self.register_buffer('spelling_table', spelling_table)
         self.byte_embed = nn.Embedding(257, model_dim) # 256 byte values, +1 for padding
         self.byte_embed.weight.label = 'byte_embed'
+        self.byte_rotary = Rotary(model_dim, 16)  # RoPE for byte positions 0-15
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
@@ -1342,6 +1363,7 @@ class GPT(nn.Module):
         # input_seq : sequence length = token id (from vocab_size)
         byte_inputs = self.spelling_table[inputs]  # : seq_len, 16 (first 16 token bytes) = byte_value (from 257)
         byte_embeds = self.byte_embed(byte_inputs)  # : seq_len, 16, model_dim = scalar_value
+        byte_embeds = self.byte_rotary(byte_embeds.unsqueeze(2)).squeeze(2)  # apply RoPE for byte position
         byte_embeds = byte_embeds.sum(dim=1)  # : seq_len, model_dim = scalar_value
         byte_embeds = norm(byte_embeds)  # RMS norm to handle variance from summing
 
