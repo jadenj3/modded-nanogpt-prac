@@ -1187,7 +1187,6 @@ class GPT(nn.Module):
         spelling_table = torch.load("data/spelling_table.pt") # vocab_size, 16 (bytes)
         self.register_buffer('spelling_table', spelling_table)
         self.byte_embed = nn.Embedding(257, model_dim) # 256 byte values, +1 for padding
-        nn.init.normal_(self.byte_embed.weight, mean=0, std=1.0 / math.sqrt(model_dim))  # match reference init
         self.byte_embed.weight.label = 'byte_embed'
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
