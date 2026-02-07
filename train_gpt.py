@@ -1344,21 +1344,6 @@ class GPT(nn.Module):
         byte_embeds = self.byte_embed(byte_inputs)  # : seq_len, 16, model_dim = scalar_value
         byte_embeds = byte_embeds.sum(dim=1)  # : seq_len, model_dim = scalar_value
 
-        # Shape checks
-        assert self.spelling_table.shape == (50304, 16), f"spelling_table shape: {self.spelling_table.shape}"
-        assert byte_inputs.shape == (self.seq_len, 16), f"byte_inputs shape: {byte_inputs.shape}"
-        assert byte_embeds.shape == (self.seq_len, 768), f"byte_embeds shape: {byte_embeds.shape}"
-
-        # Value range - byte indices should be 0-256
-        assert byte_inputs.min() >= 0, f"byte_inputs min: {byte_inputs.min()}"
-        assert byte_inputs.max() <= 256, f"byte_inputs max: {byte_inputs.max()}"
-
-        # No NaN/Inf in embeddings
-        assert not torch.isnan(byte_embeds).any(), "NaN in byte_embeds"
-        assert not torch.isinf(byte_embeds).any(), "Inf in byte_embeds"
-
-        assert (self.spelling_table[0, :] >= 0).all(), "padding should be non-negative"
-
         # Embedding lookup - embed is synced from lm_head during tied phase by optimizer
         x = self.embed(input_seq) + byte_embeds # : seq_len, model_dim
         x0_bigram = self.bigram_embed(bigram_input_seq)[None]
