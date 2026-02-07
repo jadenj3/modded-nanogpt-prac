@@ -2064,9 +2064,9 @@ if __name__ == "__main__":
         training_manager.step_optimizers(step)
 
         # Byte embedding sanity check at steps 5, 15, 50
-        if step in [5, 15, 50] and master_process: #test
+        if step in [5, 15, 50]:
             be = model.byte_embed.weight.data
-            print(f"[step {step}] byte_embed weight norm: {be.norm():.6f}, mean: {be.mean():.6f}, std: {be.std():.6f}")
+            print0(f"[step {step}] byte_embed weight norm: {be.norm():.6f}, mean: {be.mean():.6f}, std: {be.std():.6f}", console=True)
 
         # logging
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
