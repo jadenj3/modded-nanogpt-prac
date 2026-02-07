@@ -1003,8 +1003,11 @@ class CausalSelfAttention(nn.Module):
             # shift keys forward for the stationary head dims. Enables 1-layer induction.
             k[:, 1:, :, self.head_dim // 2:] = k[:, :-1, :, self.head_dim // 2:]
         if ve is not None:
-            ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T, self.num_heads, 1)
-            v = v + ve_gate_out * ve.view_as(v)  # @ KoszarskyB & @Grad62304977
+            if ve_gate_w is not None:
+                ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T, self.num_heads, 1)
+                v = v + ve_gate_out * ve.view_as(v)  # @ KoszarskyB & @Grad62304977
+            else:
+                v = v + ve.view_as(v)  # no gate for byte_embeds in middle layers
 
         # Use actual sequence length for inference, training uses fixed max
         if self.training:
@@ -1065,8 +1068,11 @@ class PairedHeadCausalSelfAttention(nn.Module):
         k = k.view(B, T * 2, self.num_heads // 2, self.head_dim)
 
         if ve is not None:
-            ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T * 2, self.num_heads // 2, 1)
-            v = v + ve_gate_out * ve.view_as(v)
+            if ve_gate_w is not None:
+                ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T * 2, self.num_heads // 2, 1)
+                v = v + ve_gate_out * ve.view_as(v)
+            else:
+                v = v + ve.view_as(v)  # no gate for byte_embeds in middle layers
 
         # Use actual sequence length for inference, training uses fixed max
         if self.training:
