@@ -1206,8 +1206,9 @@ class GPT(nn.Module):
 
         spelling_table = torch.load("data/spelling_table.pt") # vocab_size, 16 (bytes)
         self.register_buffer('spelling_table', spelling_table)
-        self.byte_embed = nn.Embedding(257, model_dim) # 256 byte values, +1 for padding
-        self.byte_embed.weight.label = 'byte_embed'
+        self.byte_embeds = nn.ModuleList([nn.Embedding(257, model_dim) for _ in range(5)])  # 5 byte embeds like value embeds
+        for i, be in enumerate(self.byte_embeds):
+            be.weight.label = f'be{i}'  # be0, be1, be2, be3, be4
         self.byte_rotary = Rotary(model_dim, 16)  # RoPE for byte positions 0-15
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
@@ -1360,12 +1361,15 @@ class GPT(nn.Module):
         assert len(bm_sizes) == self.num_layers
         key_offset = [b == long_bm for b in bm_sizes]  # apply partial key offset to long windows
 
-        # input_seq : sequence length = token id (from vocab_size)
-        byte_inputs = self.spelling_table[inputs]  # : seq_len, 16 (first 16 token bytes) = byte_value (from 257)
-        byte_embeds = self.byte_embed(byte_inputs)  # : seq_len, 16, model_dim = scalar_value
-        byte_embeds = self.byte_rotary(byte_embeds.unsqueeze(2)).squeeze(2)  # apply RoPE for byte position
-        byte_embeds = byte_embeds.sum(dim=1)  # : seq_len, model_dim = scalar_value
-        byte_embeds = norm(byte_embeds)  # RMS norm to handle variance from summing
+        # Byte embeddings - per layer like value embeds
+        byte_inputs = self.spelling_table[inputs]  # : seq_len, 16 = byte_value (0-256)
+        be = []
+        for byte_embed in self.byte_embeds:
+            b = byte_embed(byte_inputs)  # : seq_len, 16, model_dim
+            b = self.byte_rotary(b.unsqueeze(2)).squeeze(2)  # apply RoPE for byte position
+            b = b.sum(dim=1)  # : seq_len, model_dim
+            b = norm(b)  # RMS norm
+            be.append(b)
 
         # Embedding lookup - embed is synced from lm_head during tied phase by optimizer
         x = self.embed(input_seq) # : seq_len, model_dim
@@ -1375,7 +1379,7 @@ class GPT(nn.Module):
         # Value embeddings - always computed (not precomputed)
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
         # 01 ... 234 structure on token value embeddings by @photomz
-        ve = [ve[0] + byte_embeds, ve[1] + byte_embeds] + [None] * (self.num_layers - 5) + [ve[2] + byte_embeds, ve[3] + byte_embeds, ve[4] + byte_embeds]
+        ve = [ve[0] + be[0], ve[1] + be[1]] + [None] * (self.num_layers - 5) + [ve[2] + be[2], ve[3] + be[3], ve[4] + be[4]]
         assert len(ve) == self.num_layers
 
         # smear token embed forward 1 position @classiclarryd
@@ -1741,8 +1745,11 @@ class TrainingManager():
             "ve4": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "bigram_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
                              "wd_mul": 5.0},
-            "byte_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
-                           "wd_mul": 5.0},
+            "be0": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "be1": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "be2": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "be3": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "be4": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "smear_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.01,
                            "wd_mul": 0.0},
             "skip_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.05,
@@ -1759,7 +1766,7 @@ class TrainingManager():
         # - lm_head must complete before embed sync (when tied)
         self.work_order = [
             "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
-            "ve0", "ve1", "ve2", "ve3", "ve4", "bigram_embed", "byte_embed",  # Medium
+            "ve0", "ve1", "ve2", "ve3", "ve4", "bigram_embed", "be0", "be1", "be2", "be3", "be4",  # Medium
             "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
             "attn", "mlp",  # Large, polar express - process last to maximize overlap
         ]
@@ -2088,8 +2095,8 @@ if __name__ == "__main__":
 
         # Byte embedding sanity check at steps 5, 15, 50
         if step in [5, 15, 50]:
-            be = model.byte_embed.weight.data
-            print0(f"[step {step}] byte_embed weight norm: {be.norm():.6f}, mean: {be.mean():.6f}, std: {be.std():.6f}", console=True)
+            be = model.byte_embeds[0].weight.data
+            print0(f"[step {step}] be0 weight norm: {be.norm():.6f}, mean: {be.mean():.6f}, std: {be.std():.6f}", console=True)
 
         # logging
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
