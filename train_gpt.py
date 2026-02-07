@@ -1211,18 +1211,10 @@ class GPT(nn.Module):
             be.weight.label = f'be{i}'  # be0, be1, be2, be3, be4
         self.byte_rotary = Rotary(model_dim, 16)  # RoPE for byte positions 0-15
 
-        # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
-        # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(5)])
-        for embed in self.value_embeds:
-            nn.init.zeros_(embed.weight)
-        for i, ve in enumerate(self.value_embeds):
-            ve.weight.label = f've{i}'  # ve0, ve1, ve2, ve3, ve4
-
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
         self.attn_gate_bank.label = 'attn_gate_bank'
-        self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 unique gates
+        self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 gates for byte embed layers
         self.ve_gate_bank.label = 've_gate_bank'
 
         # -----------------------------------
