@@ -1184,6 +1184,10 @@ class GPT(nn.Module):
         nn.init.zeros_(self.skip_gate.weight)
         self.skip_gate.weight.label = 'skip_gate'
 
+        spelling_table = torch.load("data/spelling_table.pt") # vocab_size, 16 (bytes)
+        self.register_buffer('spelling_table', spelling_table)
+        self.byte_embed = nn.Embedding(257, model_dim) # 256 byte values, +1 for padding
+
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
         self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(5)])
@@ -1334,9 +1338,15 @@ class GPT(nn.Module):
         assert len(bm_sizes) == self.num_layers
         key_offset = [b == long_bm for b in bm_sizes]  # apply partial key offset to long windows
 
+        # input_seq : sequence length = token id (from vocab_size)
+        byte_inputs = self.spelling_table[inputs]  # : seq_len, 16 (first 16 token bytes) = byte_value (from 257)
+        byte_embeds = self.byte_embed(byte_inputs)  # : seq_len, 16, model_dim = scalar_value
+        byte_embeds = byte_embeds.sum(dim=1)  # : seq_len, model_dim = scalar_value
+
         # Embedding lookup - embed is synced from lm_head during tied phase by optimizer
-        x = self.embed(input_seq)
+        x = self.embed(input_seq) + byte_embeds # : seq_len, model_dim
         x0_bigram = self.bigram_embed(bigram_input_seq)[None]
+
 
         # Value embeddings - always computed (not precomputed)
         ve = [value_embed(input_seq) for value_embed in self.value_embeds]
