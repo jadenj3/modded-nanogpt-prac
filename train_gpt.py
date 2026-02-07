@@ -1187,6 +1187,7 @@ class GPT(nn.Module):
         spelling_table = torch.load("data/spelling_table.pt") # vocab_size, 16 (bytes)
         self.register_buffer('spelling_table', spelling_table)
         self.byte_embed = nn.Embedding(257, model_dim) # 256 byte values, +1 for padding
+        self.byte_embed.weight.label = 'byte_embed'
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
@@ -1732,6 +1733,8 @@ class TrainingManager():
             "ve4": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "bigram_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
                              "wd_mul": 5.0},
+            "byte_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
+                           "wd_mul": 5.0},
             "smear_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.01,
                            "wd_mul": 0.0},
             "skip_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.05,
@@ -1748,7 +1751,7 @@ class TrainingManager():
         # - lm_head must complete before embed sync (when tied)
         self.work_order = [
             "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
-            "ve0", "ve1", "ve2", "ve3", "ve4", "bigram_embed",  # Medium
+            "ve0", "ve1", "ve2", "ve3", "ve4", "bigram_embed", "byte_embed",  # Medium
             "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
             "attn", "mlp",  # Large, polar express - process last to maximize overlap
         ]
