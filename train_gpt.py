@@ -1343,6 +1343,7 @@ class GPT(nn.Module):
         byte_inputs = self.spelling_table[inputs]  # : seq_len, 16 (first 16 token bytes) = byte_value (from 257)
         byte_embeds = self.byte_embed(byte_inputs)  # : seq_len, 16, model_dim = scalar_value
         byte_embeds = byte_embeds.sum(dim=1)  # : seq_len, model_dim = scalar_value
+        byte_embeds = norm(byte_embeds)  # RMS norm to handle variance from summing
 
         # Embedding lookup - embed is synced from lm_head during tied phase by optimizer
         x = self.embed(input_seq) + byte_embeds # : seq_len, model_dim
