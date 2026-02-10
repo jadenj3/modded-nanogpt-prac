@@ -78,8 +78,8 @@ class InferenceWrapper:
                     self.schedule_cfg
                 )
 
-            # Remove padding from logits - model returns (1, T_padded, vocab)
-            logits = logits[0, :T, :]  # -> (T, vocab)
+            # Remove padding from logits - model returns (T_padded, vocab)
+            logits = logits[:T, :]  # -> (T, vocab)
             all_logits.append(logits)
 
         # Stack to [B, T, vocab_size]
