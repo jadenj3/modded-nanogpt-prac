@@ -1233,6 +1233,13 @@ class GPT(nn.Module):
         x = norm(x)
 
         if not self.training:
+            if mtp_weights is None:
+                # Inference mode: return (loss, logits) for eval
+                logits = F.linear(x.flatten(end_dim=1), self.lm_head.weight.bfloat16()).float()
+                logits = 23 * torch.sigmoid((logits + 5) / 7.5)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq, reduction="mean")
+                return loss, logits
+            # Validation mode: chunked for memory efficiency, returns scalar loss only
             loss = 0
             for i in range(4):
                 logits: Tensor = F.linear(x.flatten(end_dim=1).chunk(4)[i], self.lm_head.weight.bfloat16()).float()
