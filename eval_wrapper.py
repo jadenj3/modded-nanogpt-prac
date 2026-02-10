@@ -19,11 +19,7 @@ import torch
 from dataclasses import dataclass
 
 # Import from train_gpt (now safe since training code is in __main__ block)
-from train_gpt import GPT, ForwardScheduleConfig, get_bigram_hash, ParamConfig
-
-# Make ParamConfig available in __main__ for torch.load unpickling
-import sys
-sys.modules['__main__'].ParamConfig = ParamConfig
+from train_gpt import GPT, ForwardScheduleConfig
 
 
 @dataclass
@@ -67,9 +63,6 @@ class InferenceWrapper:
             if pad_len > 0:
                 seq = torch.cat([seq, seq[-1:].expand(pad_len)])
 
-            # Compute bigram hash
-            bigram_seq = get_bigram_hash(seq)
-
             # Dummy target (we ignore the loss)
             dummy_target = seq.to(torch.int64)
 
@@ -82,7 +75,6 @@ class InferenceWrapper:
                     seq.to(torch.int32),
                     dummy_target,
                     seqlens,
-                    bigram_seq.to(device),
                     self.schedule_cfg
                 )
 

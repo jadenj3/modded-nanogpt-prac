@@ -1699,9 +1699,13 @@ class Hyperparameters:
     ws_validate_post_yarn_ext: int = 27  # extend long windows out even further after applying YaRN
 
 
-if __name__ == "__main__":
+args = Hyperparameters()
 
-    args = Hyperparameters()
+# Defaults for eval/import; overridden in __main__ by torchrun env vars
+world_size = int(os.environ.get("WORLD_SIZE", "1"))
+grad_accum_steps = 8 // world_size
+
+if __name__ == "__main__":
 
     data_path = os.environ.get("DATA_PATH", ".")
     args.train_files = os.path.join(data_path, args.train_files)
