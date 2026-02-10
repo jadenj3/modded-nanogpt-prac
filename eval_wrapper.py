@@ -24,8 +24,8 @@ from train_gpt import GPT, ForwardScheduleConfig
 
 @dataclass
 class EvalConfig:
-    ws_short: int = 6   # ws_final // 2
-    ws_long: int = 13   # ws_final
+    ws_short: int = 11   # ws_final // 2 = 23 // 2
+    ws_long: int = 23    # ws_final
     max_seq_len: int = 2048
 
 
@@ -103,15 +103,20 @@ def load_for_eval(checkpoint_path, device="cuda"):
     # Handle torch.compile prefix
     model_data = {k.removeprefix("_orig_mod."): v for k, v in checkpoint["model"].items()}
 
-    # Create model with hardcoded config (matches train_gpt.py)
+    # Create model with config matching train_gpt.py
     model = GPT(
         vocab_size=50257,
-        num_layers=11,
-        num_heads=6,
+        num_layers=16,
+        num_heads=8,
         head_dim=128,
-        model_dim=768,
+        model_dim=1024,
         max_seq_len=2048,
     ).to(device)
+
+    # Handle scalars padding mismatch: training with 8 GPUs adds padding elements
+    # that a 1-GPU eval model won't have. Truncate to match.
+    if 'scalars' in model_data and model_data['scalars'].shape[0] > model.scalars.shape[0]:
+        model_data['scalars'] = model_data['scalars'][:model.scalars.shape[0]]
 
     model.load_state_dict(model_data)
 
@@ -119,10 +124,12 @@ def load_for_eval(checkpoint_path, device="cuda"):
     for m in model.modules():
         if isinstance(m, (torch.nn.Embedding, torch.nn.Linear)):
             m.weight.data = m.weight.data.bfloat16()
-    model.attn_gate_bank.data = model.attn_gate_bank.data.bfloat16()
-    model.ve_gate_bank.data = model.ve_gate_bank.data.bfloat16()
-    model.attn_bank.data = model.attn_bank.data.bfloat16()
-    model.mlp_bank.data = model.mlp_bank.data.bfloat16()
+
+    # Replay YaRN schedule to match training RoPE state.
+    # During training, yarn.apply() is called for window transitions where ws_long <= 13:
+    # 3->7, 7->11, 11->13. This adjusts angular frequencies and attention scale.
+    for old_ws, new_ws in [(3, 7), (7, 11), (11, 13)]:
+        model.yarn.apply(old_ws, new_ws)
 
     model.eval()
 

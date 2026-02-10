@@ -21,6 +21,7 @@ import torch
 torch.empty(
     1, device=f"cuda:{os.environ['LOCAL_RANK']}", requires_grad=True
 ).backward()  # prevents a bug on some systems
+device = torch.device("cuda", int(os.environ.get("LOCAL_RANK", "0")))
 import torch._dynamo as dynamo
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -1121,7 +1122,7 @@ class GPT(nn.Module):
         self.x0_lambdas.lr_mul = 5.0
         self.x0_lambdas.wd_mul = 0.0
 
-        pad = (-num_layers * 3 - 5) % dist.get_world_size()  # updated: 3*num_layers instead of 4*
+        pad = (-num_layers * 3 - 5) % (dist.get_world_size() if dist.is_initialized() else 1)  # updated: 3*num_layers instead of 4*
         self.scalars = nn.Parameter(
             torch.cat(
                 [
