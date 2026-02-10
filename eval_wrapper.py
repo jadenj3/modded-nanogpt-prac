@@ -14,6 +14,8 @@ import os
 os.environ.setdefault("WORLD_SIZE", "1")
 os.environ.setdefault("RANK", "0")
 os.environ.setdefault("LOCAL_RANK", "0")
+os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+os.environ.setdefault("MASTER_PORT", "29500")
 
 import torch
 from dataclasses import dataclass
