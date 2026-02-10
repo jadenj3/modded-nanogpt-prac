@@ -11,9 +11,24 @@ import torch
 import torch.distributed as dist
 
 
-def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None):
+def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None, chat_template=False):
     """Render complete prompts for a multiple choice question"""
-    template_str = """
+    if chat_template:
+        template_str = """\
+{%- for example in fewshot_examples -%}
+<|im_start|>user
+{{ example.query }}
+<|im_end|>
+<|im_start|>assistant
+{{ continuation_delimiter }}{{ example.choices[example.gold] }}<|im_end|>
+{% endfor -%}
+<|im_start|>user
+{{ item.query }}
+<|im_end|>
+<|im_start|>assistant
+{{ continuation_delimiter }}{{ choice }}"""
+    else:
+        template_str = """
 {%- for example in fewshot_examples -%}
 {{ example.query }}{{ continuation_delimiter }}{{ example.choices[example.gold] }}
 
@@ -29,9 +44,24 @@ def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None):
     return [template.render(choice=choice, **context) for choice in item['choices']]
 
 
-def render_prompts_schema(item, continuation_delimiter, fewshot_examples=None):
+def render_prompts_schema(item, continuation_delimiter, fewshot_examples=None, chat_template=False):
     """Render complete prompts for a schema question"""
-    template_str = """
+    if chat_template:
+        template_str = """\
+{%- for example in fewshot_examples -%}
+<|im_start|>user
+{{ example.context_options[example.gold] }}
+<|im_end|>
+<|im_start|>assistant
+{{ continuation_delimiter }}{{ example.continuation }}<|im_end|>
+{% endfor -%}
+<|im_start|>user
+{{ context }}
+<|im_end|>
+<|im_start|>assistant
+{{ continuation_delimiter }}{{ item.continuation }}"""
+    else:
+        template_str = """
 {%- for example in fewshot_examples -%}
 {{ example.context_options[example.gold] }}{{ continuation_delimiter }}{{ example.continuation }}
 
@@ -48,9 +78,24 @@ def render_prompts_schema(item, continuation_delimiter, fewshot_examples=None):
             for context_option in item['context_options']]
 
 
-def render_prompts_lm(item, continuation_delimiter, fewshot_examples=None):
+def render_prompts_lm(item, continuation_delimiter, fewshot_examples=None, chat_template=False):
     """Render complete prompt for a language modeling task."""
-    template_str = """
+    if chat_template:
+        template_str = """\
+{%- for example in fewshot_examples -%}
+<|im_start|>user
+{{ example.context | trim }}
+<|im_end|>
+<|im_start|>assistant
+{{ continuation_delimiter }}{{ example.continuation }}<|im_end|>
+{% endfor -%}
+<|im_start|>user
+{{ item.context | trim }}
+<|im_end|>
+<|im_start|>assistant
+{{ continuation_delimiter }}{% if include_continuation %}{{ item.continuation }}{% endif %}"""
+    else:
+        template_str = """
 {%- for example in fewshot_examples -%}
 {{ example.context | trim }}{{ continuation_delimiter }}{{ example.continuation }}
 
@@ -136,6 +181,7 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
     task_type = task_meta['task_type']
     num_fewshot = task_meta['num_fewshot']
     continuation_delimiter = task_meta['continuation_delimiter']
+    chat_template = task_meta.get('chat_template', False)
 
     fewshot_examples = []
     if num_fewshot > 0:
@@ -145,13 +191,13 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
         fewshot_examples = [data[i] for i in fewshot_indices]
 
     if task_type == 'multiple_choice':
-        prompts = render_prompts_mc(item, continuation_delimiter, fewshot_examples)
+        prompts = render_prompts_mc(item, continuation_delimiter, fewshot_examples, chat_template=chat_template)
         tokens, start_idxs, end_idxs = batch_sequences_mc(tokenizer, prompts)
     elif task_type == 'schema':
-        prompts = render_prompts_schema(item, continuation_delimiter, fewshot_examples)
+        prompts = render_prompts_schema(item, continuation_delimiter, fewshot_examples, chat_template=chat_template)
         tokens, start_idxs, end_idxs = batch_sequences_schema(tokenizer, prompts)
     elif task_type == 'language_modeling':
-        prompts = render_prompts_lm(item, continuation_delimiter, fewshot_examples)
+        prompts = render_prompts_lm(item, continuation_delimiter, fewshot_examples, chat_template=chat_template)
         tokens, start_idxs, end_idxs = batch_sequences_lm(tokenizer, prompts)
     else:
         raise ValueError(f"Unsupported task type: {task_type}")

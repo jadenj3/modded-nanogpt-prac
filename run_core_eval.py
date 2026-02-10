@@ -69,7 +69,7 @@ def download_eval_bundle():
     print(f"Eval bundle extracted to {EVAL_BUNDLE_DIR}")
 
 
-def evaluate_model(model, tokenizer, device, max_per_task=-1):
+def evaluate_model(model, tokenizer, device, max_per_task=-1, chat_template=False):
     """Evaluate model on the CORE benchmark."""
     download_eval_bundle()
 
@@ -98,7 +98,8 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
             'task_type': task['icl_task_type'],
             'dataset_uri': task['dataset_uri'],
             'num_fewshot': task['num_fewshot'][0],
-            'continuation_delimiter': task.get('continuation_delimiter', ' ')
+            'continuation_delimiter': task.get('continuation_delimiter', ' '),
+            'chat_template': chat_template
         }
         print(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot)... ", end='', flush=True)
 
@@ -132,6 +133,8 @@ def main():
     parser.add_argument('checkpoint', type=str, help='Path to checkpoint file')
     parser.add_argument('--max-per-task', type=int, default=-1,
                         help='Max examples per task (-1 = all)')
+    parser.add_argument('--chat-template', action='store_true', default=False,
+                        help='Wrap eval prompts in chat template (for SYNTH-trained models)')
     parser.add_argument('--device', type=str, default='cuda')
     args = parser.parse_args()
 
@@ -141,7 +144,8 @@ def main():
 
     print(f"Evaluating on CORE benchmark...")
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        out = evaluate_model(model, tokenizer, args.device, max_per_task=args.max_per_task)
+        out = evaluate_model(model, tokenizer, args.device, max_per_task=args.max_per_task,
+                             chat_template=args.chat_template)
 
     print("\n" + "="*60)
     print(f"{'Task':<35} {'Accuracy':<10} {'Centered':<10}")

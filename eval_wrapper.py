@@ -13,6 +13,7 @@ import os
 # Set up single-GPU environment before importing train_gpt
 os.environ.setdefault("WORLD_SIZE", "1")
 os.environ.setdefault("RANK", "0")
+os.environ.setdefault("LOCAL_RANK", "0")
 
 import torch
 from dataclasses import dataclass
