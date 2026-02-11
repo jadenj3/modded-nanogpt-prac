@@ -39,7 +39,7 @@ def format_prompt(question, choices, fewshot=None):
             f"<|im_start|>user\n{q}\n<|im_end|>\n"
             f"<|im_start|>assistant\n\n<think>\nThe answer is {a}.\n</think>\n\n{a}<|im_end|>"
         )
-    q = render_mc(question, choices)
+    q = render_mc(question, LETTERS, choices)
     parts.append(
         f"<|im_start|>user\n{q}\n<|im_end|>\n"
         f"<|im_start|>assistant\n\n<think>\n"
