@@ -8,6 +8,7 @@ import glob
 import math
 import threading
 import time
+import tiktoken
 import uuid
 from dataclasses import dataclass
 from collections import defaultdict
@@ -1677,8 +1678,8 @@ class TrainingManager():
 @dataclass
 class Hyperparameters:
     # data
-    train_files: str = "data/fineweb10B/fineweb_train_*.bin"  # input .bin to train on
-    val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
+    train_files: str = "data/synth/synth_train_*.bin"  # input .bin to train on
+    val_files: str = "data/synth/synth_val_*.bin"  # input .bin to eval validation loss on
     val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # batch sizes
     train_bs_schedule: tuple = (131072, 262144, 393216, 524288,
@@ -1880,6 +1881,11 @@ if __name__ == "__main__":
                 training_manager.activate_hooks(step)
             send_args = training_manager.train_loader_send_args
             inputs, targets, cum_seqlens = train_loader.send(send_args)
+            if step == 0 and idx == 0:
+                enc = tiktoken.get_encoding("gpt2")
+                sample = inputs[:200].cpu().tolist()
+                decoded = enc.decode(sample)
+                print0(f"\n[DEBUG] First 200 training tokens decoded:\n{decoded}\n", console=True)
             (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
         training_manager.step_optimizers(step)
 
