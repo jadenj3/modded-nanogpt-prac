@@ -1883,7 +1883,7 @@ if __name__ == "__main__":
             inputs, targets, cum_seqlens = train_loader.send(send_args)
             if step == 0 and idx == 0:
                 enc = tiktoken.get_encoding("gpt2")
-                sample = inputs[:200].cpu().tolist()
+                sample = inputs[:2000].cpu().tolist()
                 decoded = enc.decode(sample)
                 print0(f"\n[DEBUG] First 200 training tokens decoded:\n{decoded}\n", console=True)
             (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
