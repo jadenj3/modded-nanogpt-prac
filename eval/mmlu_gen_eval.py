@@ -141,6 +141,7 @@ def main():
                 print(f"\n[{subject} #{debug_count[subject]}]")
                 print(f"  Q: {question[:200]}")
                 print(f"  Gold: {LETTERS[gold]} | Pred: {answer} | {'OK' if is_correct else 'WRONG'}")
+                print(f"  Extracted answer: '{answer}' from extract_answer()")
                 print(f"  Full generated output:\n{generated}")
                 debug_count[subject] += 1
 
