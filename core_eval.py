@@ -175,6 +175,21 @@ def forward_model(model, input_ids):
 
 
 @torch.no_grad()
+def _debug_generate(model, prompt_tokens, device, max_new_tokens=100):
+    """Autoregressively generate tokens and print the result."""
+    import tiktoken
+    enc = tiktoken.get_encoding("gpt2")
+    ids = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0)
+    generated = list(prompt_tokens)
+    for _ in range(max_new_tokens):
+        logits = model(ids)
+        next_id = logits[0, -1].argmax().item()
+        generated.append(next_id)
+        ids = torch.tensor([generated], dtype=torch.long, device=device)
+    print(f"  Generated continuation:\n{enc.decode(generated)}")
+
+
+@torch.no_grad()
 def evaluate_example(idx, model, tokenizer, data, device, task_meta):
     """Evaluate a single example, return True if correct, False otherwise"""
     item = data[idx]
@@ -227,11 +242,28 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
         predicted_tokens = predictions[0, si-1:ei-1]
         actual_tokens = input_ids[0, si:ei]
         is_correct = torch.all(predicted_tokens == actual_tokens).item()
+        if idx < 3:
+            print(f"\n[DEBUG eval] task_type={task_type} idx={idx}")
+            print(f"  Prompt:\n{prompts[0]}")
+            print(f"  Correct: {is_correct}")
+            # Generate continuation from prompt
+            prompt_tokens = tokens[0][:start_idxs[0]]
+            _debug_generate(model, prompt_tokens, device, max_new_tokens=100)
     elif task_type in ['multiple_choice', 'schema']:
         mean_losses = [losses[i, si-1:ei-1].mean().item()
                        for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
         pred_idx = mean_losses.index(min(mean_losses))
         is_correct = pred_idx == item['gold']
+        if idx < 3:
+            print(f"\n[DEBUG eval] task_type={task_type} idx={idx}")
+            print(f"  Prompt (choice 0):\n{prompts[0]}")
+            print(f"  Choices: {item.get('choices', item.get('context_options', 'N/A'))}")
+            print(f"  Losses: {[f'{l:.4f}' for l in mean_losses]}")
+            print(f"  Predicted: {pred_idx} | Gold: {item['gold']} | Correct: {is_correct}")
+            # Generate continuation from shared prefix
+            prefix_len = find_common_length(tokens, direction='left')
+            prompt_tokens = tokens[0][:prefix_len]
+            _debug_generate(model, prompt_tokens, device, max_new_tokens=100)
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
