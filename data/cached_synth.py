@@ -53,9 +53,9 @@ def format_synth(example):
         if constraints:
             query = f"{query}\n{constraints}"
     text = (
-        f"<|im_start|>user\n{query}\n<|im_end|>\n"
+        f"<|im_start|>user\n{query}\n<|im_end>\n"
         f"<|im_start|>assistant\n\n<think>\n{reasoning}\n</think>\n\n"
-        f"{answer}<|im_end|>"
+        f"{answer}<|im_end>"
     )
     return text
 
