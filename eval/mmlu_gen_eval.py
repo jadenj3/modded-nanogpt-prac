@@ -141,13 +141,7 @@ def main():
                 print(f"\n[{subject} #{debug_count[subject]}]")
                 print(f"  Q: {question[:200]}")
                 print(f"  Gold: {LETTERS[gold]} | Pred: {answer} | {'OK' if is_correct else 'WRONG'}")
-                if "</think>" in generated:
-                    think = generated.split("</think>")[0]
-                    think = think.split("<think>")[-1] if "<think>" in think else think
-                    print(f"  Think: {think[:300]}")
-                else:
-                    # show raw generation if no </think> found
-                    print(f"  Raw: {generated[-200:]}")
+                print(f"  Full generated output:\n{generated}")
                 debug_count[subject] += 1
 
         if (i + 1) % 50 == 0:
