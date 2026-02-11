@@ -50,29 +50,27 @@ def format_prompt(question, choices, fewshot=None):
 @torch.no_grad()
 def generate(model, enc, prompt_text, device, max_new_tokens=300):
     bos = enc._special_tokens['<|endoftext|>']
-    tokens = [bos] + enc.encode_ordinary(prompt_text)
+    prompt_tokens = [bos] + enc.encode_ordinary(prompt_text)
+    tokens = list(prompt_tokens)
+    generated = []
     for _ in range(max_new_tokens):
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
         logits = model(ids)
         next_id = logits[0, -1].argmax().item()
         tokens.append(next_id)
-        recent = enc.decode(tokens[-20:])
-        if "</think>" in recent or "<|im_end|>" in recent:
+        generated.append(next_id)
+        gen_text = enc.decode(generated)
+        if "</think>" in gen_text or "<|im_end|>" in gen_text or "<|endoftext|>" in gen_text:
             break
-    return enc.decode(tokens[1:])  # skip BOS
+    return enc.decode(generated)
 
 
 def extract_answer(text):
-    """Extract answer letter after </think>, or last letter mentioned."""
+    """Extract first non-whitespace character after the first </think>."""
     if "</think>" in text:
-        after = text.split("</think>")[-1].strip()
-        for ch in after:
-            if ch in LETTERS:
-                return ch
-    # fallback: last letter in text
-    for ch in reversed(text):
-        if ch in LETTERS:
-            return ch
+        after = text.split("</think>", 1)[1].strip()
+        if after:
+            return after[0] if after[0] in LETTERS else None
     return None
 
 
