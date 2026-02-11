@@ -3,13 +3,13 @@ PleIAs/SYNTH dataset preparation
 https://huggingface.co/datasets/PleIAs/SYNTH
 
 Downloads the SYNTH dataset, formats each example with a chat template,
-tokenizes with GPT-2 tiktoken, and writes .bin shards in the same format
+tokenizes with PleIAs/Baguettotron, and writes .bin shards in the same format
 as fineweb for the existing data loader.
 """
 import os
 import sys
 import numpy as np
-import tiktoken
+from transformers import AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
 
@@ -69,8 +69,8 @@ DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), "synth")
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 # init the tokenizer
-enc = tiktoken.get_encoding("gpt2")
-eot = enc._special_tokens['<|endoftext|>']
+enc = AutoTokenizer.from_pretrained("PleIAs/Baguettotron")
+bos_id = enc.bos_token_id  # 1
 
 # load dataset in streaming mode
 print("Loading PleIAs/SYNTH dataset (streaming)...")
@@ -97,7 +97,7 @@ for example in ds:
 
     # format and tokenize
     text = format_synth(example)
-    tokens = [eot] + enc.encode_ordinary(text)
+    tokens = [bos_id] + enc.encode(text)
     tokens_np = np.array(tokens, dtype=np.uint16)
     total_examples += 1
 
