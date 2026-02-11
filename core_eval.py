@@ -242,7 +242,7 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
         predicted_tokens = predictions[0, si-1:ei-1]
         actual_tokens = input_ids[0, si:ei]
         is_correct = torch.all(predicted_tokens == actual_tokens).item()
-        if idx < 3:
+        if idx < 1:
             print(f"\n[DEBUG eval] task_type={task_type} idx={idx}")
             print(f"  Prompt:\n{prompts[0]}")
             print(f"  Correct: {is_correct}")
@@ -254,7 +254,7 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
                        for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
         pred_idx = mean_losses.index(min(mean_losses))
         is_correct = pred_idx == item['gold']
-        if idx < 3:
+        if idx < 1:
             print(f"\n[DEBUG eval] task_type={task_type} idx={idx}")
             print(f"  Prompt (choice 0):\n{prompts[0]}")
             print(f"  Choices: {item.get('choices', item.get('context_options', 'N/A'))}")
