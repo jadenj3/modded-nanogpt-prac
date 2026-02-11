@@ -8,7 +8,6 @@ import glob
 import math
 import threading
 import time
-import tiktoken
 import uuid
 from dataclasses import dataclass
 from collections import defaultdict
@@ -1287,7 +1286,7 @@ def _load_data_shard(file: Path):
     return tokens
 
 
-BOS_ID = 50256
+BOS_ID = 1
 
 
 class BOSFinder:
@@ -1767,7 +1766,7 @@ if __name__ == "__main__":
     print0("=" * 100)
 
     model: nn.Module = GPT(
-        vocab_size=50257,
+        vocab_size=65536,
         num_layers=16,
         num_heads=8,
         head_dim=128,
@@ -1882,10 +1881,11 @@ if __name__ == "__main__":
             send_args = training_manager.train_loader_send_args
             inputs, targets, cum_seqlens = train_loader.send(send_args)
             if step == 0 and idx == 0:
-                enc = tiktoken.get_encoding("gpt2")
+                from transformers import AutoTokenizer
+                enc = AutoTokenizer.from_pretrained("PleIAs/Baguettotron")
                 sample = inputs[:2000].cpu().tolist()
                 decoded = enc.decode(sample)
-                print0(f"\n[DEBUG] First 200 training tokens decoded:\n{decoded}\n", console=True)
+                print0(f"\n[DEBUG] First 2000 training tokens decoded:\n{decoded}\n", console=True)
             (model(inputs, targets, cum_seqlens, training_manager.get_forward_args()) / grad_accum_steps).backward()
         training_manager.step_optimizers(step)
 
