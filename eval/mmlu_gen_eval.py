@@ -65,14 +65,16 @@ def generate(model, enc, prompt_text, device, max_new_tokens=300):
         next_id = logits[0, -1].argmax().item()
         tokens.append(next_id)
         generated.append(next_id)
-        gen_text = enc.decode(generated)
+        # Decode with special tokens visible for stop detection
+        gen_text = enc.decode(generated, skip_special_tokens=False)
         if "</think>" in gen_text or "<|im_end>" in gen_text or "<|end_of_text|>" in gen_text:
             break
-    return enc.decode(generated)
+    return generated
 
 
 def extract_answer(text):
     """Extract first non-whitespace character after the first </think>, or first letter in output."""
+    # Decode without special tokens for answer extraction
     if "</think>" in text:
         after = text.split("</think>", 1)[1].strip()
         if after and after[0] in LETTERS:
@@ -128,8 +130,9 @@ def main():
 
         fewshot = fewshot_by_subject.get(subject, [])[:args.num_fewshot]
         prompt = format_prompt(question, choices, fewshot=fewshot)
-        generated = generate(model, enc, prompt, args.device, max_new_tokens=args.max_think_tokens)
-        answer = extract_answer(generated)
+        generated_ids = generate(model, enc, prompt, args.device, max_new_tokens=args.max_think_tokens)
+        generated_text = enc.decode(generated_ids, skip_special_tokens=False)
+        answer = extract_answer(generated_text)
         is_correct = (answer == LETTERS[gold])
 
         if is_correct:
@@ -150,7 +153,8 @@ def main():
                 print(f"  Q: {question[:200]}")
                 print(f"  Gold: {LETTERS[gold]} | Pred: {answer} | {'OK' if is_correct else 'WRONG'}")
                 print(f"  Extracted answer: '{answer}' from extract_answer()")
-                print(f"  Full generated output:\n{generated}")
+                print(f"  First 20 generated token IDs: {generated_ids[:20]}")
+                print(f"  Full generated output (with special tokens):\n{generated_text}")
                 debug_count[subject] += 1
 
         if (i + 1) % 50 == 0:
