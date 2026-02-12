@@ -1940,7 +1940,7 @@ class Hyperparameters:
     # sonic-moe
     use_sonic_moe: bool = True
     moe_num_experts: int = 4
-    moe_num_experts_per_tok: int = 2
+    moe_num_experts_per_tok: int = 1
     moe_intermediate_size: int | None = None
     moe_activation: str = "SWIGLU"
     moe_add_bias: bool = False
