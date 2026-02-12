@@ -837,26 +837,6 @@ class CastedLinearT(nn.Module):
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the model
 
-class Rotary(nn.Module):
-    """Simple rotary position embedding for byte positions."""
-    def __init__(self, dim: int, max_seq_len: int):
-        super().__init__()
-        # half-truncate RoPE by @YouJiacheng (w/ base freq tuning)
-        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=dim//4, dtype=torch.float32)
-        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(dim//4)])
-        t = torch.arange(max_seq_len, dtype=torch.float32)
-        theta = torch.einsum("i,j -> ij", t, angular_freq)
-        self.cos = nn.Buffer(theta.cos(), persistent=False)
-        self.sin = nn.Buffer(theta.sin(), persistent=False)
-
-    def forward(self, x_BTHD: Tensor):
-        assert self.cos.size(0) >= x_BTHD.size(-3)
-        cos, sin = self.cos[None, :x_BTHD.size(-3), None, :], self.sin[None, :x_BTHD.size(-3), None, :]
-        x1, x2 = x_BTHD.to(dtype=torch.float32).chunk(2, dim=-1)
-        y1 = x1 * cos + x2 * sin
-        y2 = x1 * (-sin) + x2 * cos
-        return torch.cat((y1, y2), 3).type_as(x_BTHD)
-
 class Yarn(nn.Module):
     def __init__(self, head_dim, max_seq_len):
         super().__init__()
@@ -1003,11 +983,8 @@ class CausalSelfAttention(nn.Module):
             # shift keys forward for the stationary head dims. Enables 1-layer induction.
             k[:, 1:, :, self.head_dim // 2:] = k[:, :-1, :, self.head_dim // 2:]
         if ve is not None:
-            if ve_gate_w is not None:
-                ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T, self.num_heads, 1)
-                v = v + ve_gate_out * ve.view_as(v)  # @ KoszarskyB & @Grad62304977
-            else:
-                v = v + ve.view_as(v)  # no gate for byte_embeds in middle layers
+            ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T, self.num_heads, 1)
+            v = v + ve_gate_out * ve.view_as(v)  # @ KoszarskyB & @Grad62304977
 
         # Use actual sequence length for inference, training uses fixed max
         if self.training:
@@ -1068,11 +1045,8 @@ class PairedHeadCausalSelfAttention(nn.Module):
         k = k.view(B, T * 2, self.num_heads // 2, self.head_dim)
 
         if ve is not None:
-            if ve_gate_w is not None:
-                ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T * 2, self.num_heads // 2, 1)
-                v = v + ve_gate_out * ve.view_as(v)
-            else:
-                v = v + ve.view_as(v)  # no gate for byte_embeds in middle layers
+            ve_gate_out = 2 * torch.sigmoid(F.linear(x[..., :12], ve_gate_w)).view(B, T * 2, self.num_heads // 2, 1)
+            v = v + ve_gate_out * ve.view_as(v)
 
         # Use actual sequence length for inference, training uses fixed max
         if self.training:
@@ -1210,16 +1184,18 @@ class GPT(nn.Module):
         nn.init.zeros_(self.skip_gate.weight)
         self.skip_gate.weight.label = 'skip_gate'
 
-        spelling_table = torch.load("data/spelling_table.pt") # vocab_size, 16 (bytes)
-        self.register_buffer('spelling_table', spelling_table)
-        self.byte_embed = nn.Embedding(257, model_dim)  # single shared byte embed replacing value embeds
-        self.byte_embed.weight.label = 'byte_embed'
-        self.byte_rotary = Rotary(model_dim, 16)  # RoPE for byte positions 0-15
+        # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
+        # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(5)])
+        for embed in self.value_embeds:
+            nn.init.zeros_(embed.weight)
+        for i, ve in enumerate(self.value_embeds):
+            ve.weight.label = f've{i}'  # ve0, ve1, ve2, ve3, ve4
 
         # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
         self.attn_gate_bank.label = 'attn_gate_bank'
-        self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 gates for byte embed layers
+        self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 unique gates
         self.ve_gate_bank.label = 've_gate_bank'
 
         # -----------------------------------
@@ -1358,21 +1334,14 @@ class GPT(nn.Module):
         assert len(bm_sizes) == self.num_layers
         key_offset = [b == long_bm for b in bm_sizes]  # apply partial key offset to long windows
 
-        # Byte embedding - single shared embed for all layers (replaces value embeds)
-        byte_inputs = self.spelling_table[inputs]  # : seq_len, 16 = byte_value (0-256)
-        byte_embeds = self.byte_embed(byte_inputs)  # : seq_len, 16, model_dim
-        byte_embeds = self.byte_rotary(byte_embeds.unsqueeze(2)).squeeze(2)  # apply RoPE for byte position
-        byte_embeds = byte_embeds.sum(dim=1)  # : seq_len, model_dim
-        byte_embeds = norm(byte_embeds)  # RMS norm
-
         # Embedding lookup - embed is synced from lm_head during tied phase by optimizer
-        x = self.embed(input_seq) # : seq_len, model_dim
+        x = self.embed(input_seq)
         x0_bigram = self.bigram_embed(bigram_input_seq)[None]
 
-
-        # Byte embeds used at all layers (replaces value embeds)
-        # Gates available at layers 0, 1, 8, 9, 10 (original ve positions); no gates for middle layers
-        ve = [byte_embeds] * self.num_layers
+        # Value embeddings - always computed (not precomputed)
+        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+        # 01 ... 234 structure on token value embeddings by @photomz
+        ve = [ve[0], ve[1]] + [None] * (self.num_layers - 5) + [ve[2], ve[3], ve[4]]
         assert len(ve) == self.num_layers
 
         # smear token embed forward 1 position @classiclarryd
@@ -1731,10 +1700,13 @@ class TrainingManager():
             "mlp": {"optim": "normuon", "comms": "sharded", "adam_betas": None},
             "scalars": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 5.0,
                         "wd_mul": 0.0},
+            "ve0": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve1": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve2": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve3": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve4": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "bigram_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
                              "wd_mul": 5.0},
-            "byte_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
-                           "wd_mul": 5.0},
             "smear_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.01,
                            "wd_mul": 0.0},
             "skip_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.05,
@@ -1751,7 +1723,7 @@ class TrainingManager():
         # - lm_head must complete before embed sync (when tied)
         self.work_order = [
             "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
-            "bigram_embed", "byte_embed",  # Medium
+            "ve0", "ve1", "ve2", "ve3", "ve4", "bigram_embed",  # Medium
             "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
             "attn", "mlp",  # Large, polar express - process last to maximize overlap
         ]
@@ -2077,11 +2049,6 @@ if __name__ == "__main__":
             (model(inputs, targets, cum_seqlens, bigram_inputs,
                    training_manager.get_forward_args())[0] / grad_accum_steps).backward()
         training_manager.step_optimizers(step)
-
-        # Byte embedding sanity check at steps 5, 15, 50
-        if step in [5, 15, 50]:
-            be = model.byte_embed.weight.data
-            print0(f"[step {step}] byte_embed weight norm: {be.norm():.6f}, mean: {be.mean():.6f}, std: {be.std():.6f}", console=True)
 
         # logging
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
