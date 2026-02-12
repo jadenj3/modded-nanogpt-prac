@@ -123,8 +123,14 @@ class NanoGPTLMEvalAdapter(LM):
                 continue
 
             tokens = context_tokens + continuation_tokens
+            # Truncate from left if exceeding max length, keeping all continuation tokens
+            if len(tokens) > self._max_length:
+                tokens = tokens[-self._max_length:]
+                context_len = len(tokens) - len(continuation_tokens)
+            else:
+                context_len = len(context_tokens)
             logits = self._run_model(tokens, valid_tokens=len(tokens) - 1)
-            start = max(len(context_tokens) - 1, 0)
+            start = max(context_len - 1, 0)
             end = start + len(continuation_tokens)
             selected = logits[start:end].to(torch.float32)
             target = torch.tensor(continuation_tokens, device=self.device)
@@ -201,6 +207,10 @@ class NanoGPTLMEvalAdapter(LM):
         Returns:
             Tensor of shape (valid_tokens, vocab_size) with logit scores
         """
+        # Safety truncation from left if sequence exceeds max length
+        if len(tokens) > self._max_length:
+            tokens = tokens[-self._max_length:]
+            valid_tokens = min(valid_tokens, len(tokens))
         input_ids = torch.tensor([tokens], dtype=torch.long, device=self.device)
         logits = self.model_wrapper(input_ids)  # [1, T, vocab_size]
         return logits[0, :valid_tokens]
