@@ -18,13 +18,13 @@ def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None, chat_
 {%- for example in fewshot_examples -%}
 <|im_start|>user
 {{ example.query }}
-<|im_end|>
+<|im_end>
 <|im_start|>assistant
-{{ continuation_delimiter }}{{ example.choices[example.gold] }}<|im_end|>
+{{ continuation_delimiter }}{{ example.choices[example.gold] }}<|im_end>
 {% endfor -%}
 <|im_start|>user
 {{ item.query }}
-<|im_end|>
+<|im_end>
 <|im_start|>assistant
 {{ continuation_delimiter }}{{ choice }}"""
     else:
@@ -51,13 +51,13 @@ def render_prompts_schema(item, continuation_delimiter, fewshot_examples=None, c
 {%- for example in fewshot_examples -%}
 <|im_start|>user
 {{ example.context_options[example.gold] }}
-<|im_end|>
+<|im_end>
 <|im_start|>assistant
-{{ continuation_delimiter }}{{ example.continuation }}<|im_end|>
+{{ continuation_delimiter }}{{ example.continuation }}<|im_end>
 {% endfor -%}
 <|im_start|>user
 {{ context }}
-<|im_end|>
+<|im_end>
 <|im_start|>assistant
 {{ continuation_delimiter }}{{ item.continuation }}"""
     else:
@@ -85,13 +85,13 @@ def render_prompts_lm(item, continuation_delimiter, fewshot_examples=None, chat_
 {%- for example in fewshot_examples -%}
 <|im_start|>user
 {{ example.context | trim }}
-<|im_end|>
+<|im_end>
 <|im_start|>assistant
-{{ continuation_delimiter }}{{ example.continuation }}<|im_end|>
+{{ continuation_delimiter }}{{ example.continuation }}<|im_end>
 {% endfor -%}
 <|im_start|>user
 {{ item.context | trim }}
-<|im_end|>
+<|im_end>
 <|im_start|>assistant
 {{ continuation_delimiter }}{% if include_continuation %}{{ item.continuation }}{% endif %}"""
     else:
@@ -177,8 +177,8 @@ def forward_model(model, input_ids):
 @torch.no_grad()
 def _debug_generate(model, prompt_tokens, device, max_new_tokens=100):
     """Autoregressively generate tokens and print the result."""
-    import tiktoken
-    enc = tiktoken.get_encoding("gpt2")
+    from transformers import AutoTokenizer
+    enc = AutoTokenizer.from_pretrained("PleIAs/Baguettotron")
     ids = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0)
     generated = list(prompt_tokens)
     for _ in range(max_new_tokens):
