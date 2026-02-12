@@ -179,9 +179,12 @@ def _debug_generate(model, prompt_tokens, device, max_new_tokens=100):
     """Autoregressively generate tokens and print the result."""
     from transformers import AutoTokenizer
     enc = AutoTokenizer.from_pretrained("PleIAs/Baguettotron")
+    max_seq_len = getattr(model, 'max_seq_len', 2048)
     ids = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0)
     generated = list(prompt_tokens)
     for _ in range(max_new_tokens):
+        if len(generated) >= max_seq_len:
+            break
         logits = model(ids)
         next_id = logits[0, -1].argmax().item()
         generated.append(next_id)
