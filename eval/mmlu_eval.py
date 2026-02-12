@@ -144,7 +144,7 @@ class NanoGPTLMEvalAdapter(LM):
             list[int]: Token IDs, variable length depending on input text.
                 Used internally by lm-eval for caching and request construction.
         """
-        return self.tokenizer.encode(string, add_special_tokens=False)
+        return self.tokenizer.encode(string)
 
     def tok_decode(self, tokens: Iterable[int], **_: object) -> str:
         """Decode a sequence of token IDs back into a string.
@@ -204,7 +204,7 @@ class NanoGPTLMEvalAdapter(LM):
         for req in requests:
             context, continuation = req.args
             context_tokens = self._encode_with_bos(context)
-            continuation_tokens = self.tokenizer.encode(continuation, add_special_tokens=False)
+            continuation_tokens = self.tokenizer.encode(continuation)
             if not continuation_tokens:
                 pair = (0.0, True)
                 outputs.append(pair)
@@ -321,7 +321,7 @@ class NanoGPTLMEvalAdapter(LM):
                 text = self.tokenizer.decode(generated)
                 if self._stops_here(text, until):
                     text = self._truncate_until(text, until)
-                    generated = self.tokenizer.encode(text, add_special_tokens=False)
+                    generated = self.tokenizer.encode(text)
                     break
 
             text = self.tokenizer.decode(generated)
@@ -345,7 +345,7 @@ class NanoGPTLMEvalAdapter(LM):
             list[int]: Token IDs of length (1 + num_text_tokens), starting with
                 BOS. Used as input to _run_model for all evaluation methods.
         """
-        tokens = self.tokenizer.encode(text, add_special_tokens=False)
+        tokens = self.tokenizer.encode(text)
         return [self.bos_token] + tokens
 
     @torch.no_grad()

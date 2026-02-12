@@ -50,7 +50,7 @@ def format_prompt(question, choices, fewshot=None):
 @torch.no_grad()
 def generate(model, enc, prompt_text, device, max_new_tokens=300):
     bos = enc.bos_token_id  # 1
-    prompt_tokens = [bos] + enc.encode(prompt_text, add_special_tokens=False)
+    prompt_tokens = [bos] + enc.encode(prompt_text)
     max_seq_len = model.max_seq_len
     # truncate prompt if it's already too long
     if len(prompt_tokens) >= max_seq_len:
