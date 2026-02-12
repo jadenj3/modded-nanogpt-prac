@@ -66,11 +66,15 @@ def generate(model, enc, prompt_text, device, max_new_tokens=300):
 
 
 def extract_answer(text):
-    """Extract first non-whitespace character after the first </think>."""
+    """Extract first non-whitespace character after the first </think>, or first letter in output."""
     if "</think>" in text:
         after = text.split("</think>", 1)[1].strip()
-        if after:
-            return after[0] if after[0] in LETTERS else None
+        if after and after[0] in LETTERS:
+            return after[0]
+    # fallback: first letter found in the output
+    for ch in text.strip():
+        if ch in LETTERS:
+            return ch
     return None
 
 
