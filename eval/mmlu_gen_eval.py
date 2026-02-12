@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
-import tiktoken
+from transformers import AutoTokenizer
 from datasets import load_dataset
 from eval_wrapper import load_for_eval
 
@@ -36,12 +36,12 @@ def format_prompt(question, choices, fewshot=None):
         q = render_mc(ex["question"], LETTERS, ex["choices"])
         a = LETTERS[ex["answer"]]
         parts.append(
-            f"<|im_start|>user\n{q}\n<|im_end|>\n"
-            f"<|im_start|>assistant\n\n<think>\nThe answer is {a}.\n</think>\n\n{a}<|im_end|>"
+            f"<|im_start|>user\n{q}\n<|im_end>\n"
+            f"<|im_start|>assistant\n\n<think>\nThe answer is {a}.\n</think>\n\n{a}<|im_end>"
         )
     q = render_mc(question, LETTERS, choices)
     parts.append(
-        f"<|im_start|>user\n{q}\n<|im_end|>\n"
+        f"<|im_start|>user\n{q}\n<|im_end>\n"
         f"<|im_start|>assistant\n\n<think>\n"
     )
     return "\n".join(parts)
@@ -49,8 +49,8 @@ def format_prompt(question, choices, fewshot=None):
 
 @torch.no_grad()
 def generate(model, enc, prompt_text, device, max_new_tokens=300):
-    bos = enc._special_tokens['<|endoftext|>']
-    prompt_tokens = [bos] + enc.encode_ordinary(prompt_text)
+    bos = enc.bos_token_id  # 1
+    prompt_tokens = [bos] + enc.encode(prompt_text)
     tokens = list(prompt_tokens)
     generated = []
     for _ in range(max_new_tokens):
@@ -60,7 +60,7 @@ def generate(model, enc, prompt_text, device, max_new_tokens=300):
         tokens.append(next_id)
         generated.append(next_id)
         gen_text = enc.decode(generated)
-        if "</think>" in gen_text or "<|im_end|>" in gen_text or "<|endoftext|>" in gen_text:
+        if "</think>" in gen_text or "<|im_end>" in gen_text or "<|end_of_text|>" in gen_text:
             break
     return enc.decode(generated)
 
@@ -84,7 +84,7 @@ def main():
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
-    enc = tiktoken.get_encoding("gpt2")
+    enc = AutoTokenizer.from_pretrained("PleIAs/Baguettotron")
 
     print(f"Loading model from {args.checkpoint}...")
     model, _ = load_for_eval(args.checkpoint, device=args.device)
