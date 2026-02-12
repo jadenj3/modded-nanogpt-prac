@@ -1864,6 +1864,12 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
             t0 = time.perf_counter()
 
+        if master_process and args.save_checkpoint and step > 0 and step % 1000 == 0:
+            log = dict(step=step, code=code, model=model.state_dict(),
+                       optimizers=training_manager.get_state())
+            os.makedirs(f"logs/{run_id}", exist_ok=True)
+            torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
+
         if last_step:
             if master_process and args.save_checkpoint:
                 log = dict(step=step, code=code, model=model.state_dict(),
