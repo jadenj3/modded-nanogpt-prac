@@ -41,7 +41,7 @@ class TokenizerWrapper:
         """Tokenize prompts, optionally prepending a token."""
         result = []
         for prompt in prompts:
-            tokens = self._tokenizer.encode(prompt)
+            tokens = self._tokenizer.encode(prompt, add_special_tokens=False)
             if prepend is not None:
                 tokens = [prepend] + tokens
             result.append(tokens)

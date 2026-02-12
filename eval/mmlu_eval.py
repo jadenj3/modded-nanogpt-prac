@@ -321,7 +321,7 @@ class NanoGPTLMEvalAdapter(LM):
                 text = self.tokenizer.decode(generated)
                 if self._stops_here(text, until):
                     text = self._truncate_until(text, until)
-                    generated = self.tokenizer.encode(text)
+                    generated = self.tokenizer.encode(text, add_special_tokens=False)
                     break
 
             text = self.tokenizer.decode(generated)
@@ -345,7 +345,7 @@ class NanoGPTLMEvalAdapter(LM):
             list[int]: Token IDs of length (1 + num_text_tokens), starting with
                 BOS. Used as input to _run_model for all evaluation methods.
         """
-        tokens = self.tokenizer.encode(text)
+        tokens = self.tokenizer.encode(text, add_special_tokens=False)
         return [self.bos_token] + tokens
 
     @torch.no_grad()
