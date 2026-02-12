@@ -18,7 +18,7 @@ import argparse
 from pathlib import Path
 
 import torch
-from transformers import GPT2Tokenizer
+from transformers import AutoTokenizer
 
 from eval_wrapper import load_for_eval
 from core_eval import evaluate_task
