@@ -105,7 +105,7 @@ def load_for_eval(checkpoint_path, device="cuda"):
 
     # Create model with config matching train_gpt.py
     model = GPT(
-        vocab_size=50257,
+        vocab_size=65536,
         num_layers=16,
         num_heads=8,
         head_dim=128,
@@ -136,9 +136,9 @@ def load_for_eval(checkpoint_path, device="cuda"):
     # Wrap for inference interface
     wrapper = InferenceWrapper(model)
 
-    # Return GPT-2 tokenizer (same vocab as training)
-    from transformers import GPT2Tokenizer
-    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    # Return Baguettotron tokenizer (same vocab as training)
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("PleIAs/Baguettotron")
 
     return wrapper, tokenizer
 
