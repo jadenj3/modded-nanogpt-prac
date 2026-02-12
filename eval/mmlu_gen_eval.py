@@ -48,7 +48,7 @@ def format_prompt(question, choices, fewshot=None):
 
 
 @torch.no_grad()
-def generate(model, enc, prompt_text, device, max_new_tokens=300):
+def generate(model, enc, prompt_text, device, max_new_tokens=300, repetition_penalty=1.1):
     bos = enc.bos_token_id  # 1
     prompt_tokens = [bos] + enc.encode(prompt_text)
     max_seq_len = model.max_seq_len
@@ -62,7 +62,16 @@ def generate(model, enc, prompt_text, device, max_new_tokens=300):
             break
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
         logits = model(ids)
-        next_id = logits[0, -1].argmax().item()
+        next_logits = logits[0, -1].float()
+        # Apply repetition penalty to tokens already generated
+        if repetition_penalty != 1.0 and generated:
+            seen = set(generated)
+            for token_id in seen:
+                if next_logits[token_id] > 0:
+                    next_logits[token_id] /= repetition_penalty
+                else:
+                    next_logits[token_id] *= repetition_penalty
+        next_id = next_logits.argmax().item()
         tokens.append(next_id)
         generated.append(next_id)
         # Decode with special tokens visible for stop detection
