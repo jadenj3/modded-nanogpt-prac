@@ -51,9 +51,15 @@ def format_prompt(question, choices, fewshot=None):
 def generate(model, enc, prompt_text, device, max_new_tokens=300):
     bos = enc.bos_token_id  # 1
     prompt_tokens = [bos] + enc.encode(prompt_text)
+    max_seq_len = model.max_seq_len
+    # truncate prompt if it's already too long
+    if len(prompt_tokens) >= max_seq_len:
+        prompt_tokens = prompt_tokens[-(max_seq_len - max_new_tokens):]
     tokens = list(prompt_tokens)
     generated = []
     for _ in range(max_new_tokens):
+        if len(tokens) >= max_seq_len:
+            break
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
         logits = model(ids)
         next_id = logits[0, -1].argmax().item()
