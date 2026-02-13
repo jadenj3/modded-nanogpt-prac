@@ -1927,10 +1927,10 @@ class Hyperparameters:
     val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
     val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # batch sizes
-    train_bs_schedule: tuple = (8 * 2048 * 6, 16 * 2048 * 6, 24 * 2048 * 6)
+    train_bs_schedule: tuple = (8 * 2048 * 5, 16 * 2048 * 5, 24 * 2048 * 5)
     train_bs_extension: int = 24 * 2048 * 8
     train_max_seq_len: int = 128 * 16
-    val_batch_size: int = 4 * 64 * 1024 * 6
+    val_batch_size: int = 4 * 64 * 1024 * 5
     # optimization
     num_scheduled_iterations: int = 300  # number of steps to complete lr and ws schedule
     num_extension_iterations: int = 40  # number of steps to continue training at final lr and ws
