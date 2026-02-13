@@ -1938,7 +1938,7 @@ class Hyperparameters:
     cooldown_frac: float = 0.55  # fraction of num_scheduled_iterations spent cooling down the learning rate
     split_embed_frac: float = 2 / 3  # fraction of training when embeddings split from lm_head
     # sonic-moe
-    use_sonic_moe: bool = False
+    use_sonic_moe: bool = True
     moe_num_experts: int = 4
     moe_num_experts_per_tok: int = 1
     moe_intermediate_size: int | None = None
