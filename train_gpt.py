@@ -1221,20 +1221,24 @@ class GPT(nn.Module):
         self.layer_to_attn_idx = {layer_idx: bank_idx for bank_idx, layer_idx in enumerate(self.attn_layer_indices)}
         self.layer_to_mlp_idx = {layer_idx: bank_idx for bank_idx, layer_idx in enumerate(self.mlp_layer_indices)}
 
+        ws = dist.get_world_size() if dist.is_initialized() else 1
+
         # Attention bank: stores QKVO weights for all attention layers
         # merged QKVO weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
         # Simplified layout by @chrisjmccormick
-        # Shape: (num_attn_layers, 4*model_dim, hdim) = (10, 3072, 768)
-        # Reshape for sharding: (40, 768, 768) for even distribution across 8 GPUs
-        self.attn_bank = nn.Parameter(torch.empty(len(self.attn_layer_indices), 4 * model_dim, hdim))
+        # We pad to ensure total matrices (num_attn * 4) is divisible by world_size for even sharding
+        total_attn_matrices = len(self.attn_layer_indices) * 4
+        padded_attn = ((total_attn_matrices + ws - 1) // ws) * ws
+        attn_pad = (padded_attn - total_attn_matrices) // 4
+        num_attn_with_padding = len(self.attn_layer_indices) + attn_pad
+        self.attn_bank = nn.Parameter(torch.empty(num_attn_with_padding, 4 * model_dim, hdim))
         self.attn_bank.label = 'attn'
-        self.attn_bank.reshape = (len(self.attn_layer_indices) * 4, hdim, hdim)  # (40, 768, 768)
+        self.attn_bank.reshape = (num_attn_with_padding * 4, hdim, hdim)
 
         # MLP bank: stores c_fc and c_proj for all MLP layers
         # We pad to ensure total matrices (num_mlp * 2) is divisible by world_size for even sharding
         total_mlp_matrices = len(self.mlp_layer_indices) * 2
-        ws = dist.get_world_size() if dist.is_initialized() else 1
         padded = ((total_mlp_matrices + ws - 1) // ws) * ws
         mlp_pad = (padded - total_mlp_matrices) // 2
         num_mlp_with_padding = len(self.mlp_layer_indices) + mlp_pad
