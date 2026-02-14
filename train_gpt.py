@@ -1775,12 +1775,7 @@ class TrainingManager():
         mtp_weights_schedule = []
         for s in range(args.num_iterations + 1):
             x = s / args.num_scheduled_iterations
-            if x < 1 / 3:
-                w = [1.0, 0.5, 0.25 * (1 - 3 * x)]
-            elif x < 2 / 3:
-                w = [1.0, 0.5 * (1 - (3 * x - 1))]
-            else:
-                w = [1.0]
+            w = [1.0]
             mtp_weights_schedule.append(torch.tensor(w, device=device))
         return mtp_weights_schedule
 
