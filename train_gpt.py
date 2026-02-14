@@ -1191,9 +1191,19 @@ class GPT(nn.Module):
         nn.init.zeros_(self.skip_gate.weight)
         self.skip_gate.weight.label = 'skip_gate'
 
-        # parameter banks for attention gate weights
+        # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
+        # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
+        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(5)])
+        for embed in self.value_embeds:
+            nn.init.zeros_(embed.weight)
+        for i, ve in enumerate(self.value_embeds):
+            ve.weight.label = f've{i}'  # ve0, ve1, ve2, ve3, ve4
+
+        # parameter banks for attention and value embedding gate weights
         self.attn_gate_bank = nn.Parameter(torch.zeros(num_layers - 1, num_heads, 12))  # all layers except no-attn layer
         self.attn_gate_bank.label = 'attn_gate_bank'
+        self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 unique gates
+        self.ve_gate_bank.label = 've_gate_bank'
 
         # -----------------------------------
         # Parameter banks for sharded optimization, by @chrisjmccormick
@@ -1342,7 +1352,11 @@ class GPT(nn.Module):
         x = self.embed(input_seq)
         x0_bigram = self.bigram_embed(bigram_input_seq)[None]
 
-        ve = [None] * self.num_layers
+        # Value embeddings - always computed (not precomputed)
+        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+        # 01 ... 234 structure on token value embeddings by @photomz
+        ve = [ve[0], ve[1]] + [None] * (self.num_layers - 5) + [ve[2], ve[3], ve[4]]
+        assert len(ve) == self.num_layers
 
         # smear token embed forward 1 position @classiclarryd
         smear_gate_out = smear_lambda * torch.sigmoid(self.smear_gate(x[1:, :self.smear_gate.weight.size(-1)]))
@@ -1351,9 +1365,11 @@ class GPT(nn.Module):
 
         # unbind gate banks to avoid select_backwards kernel
         ag = [w.bfloat16() for w in self.attn_gate_bank.unbind(0)]
+        veg = [w.bfloat16() for w in self.ve_gate_bank.unbind(0)]
         attn_gates = ag[:self.no_attn_layer] + [None] + ag[self.no_attn_layer:]
-        ve_gates = [None] * self.num_layers
+        ve_gates = [veg[0], veg[1]] + [None] * (self.num_layers - 5) + [veg[2], veg[3], veg[4]]
         assert len(attn_gates) == self.num_layers
+        assert len(ve_gates) == self.num_layers
 
         # unbind weight banks to avoid select_backwards kernel
         attn_weights = self.attn_bank.unbind(0)  # tuple of [4*dim, hdim] tensors
@@ -1698,6 +1714,11 @@ class TrainingManager():
             "mlp": {"optim": "normuon", "comms": "sharded", "adam_betas": None},
             "scalars": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 5.0,
                         "wd_mul": 0.0},
+            "ve0": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve1": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve2": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve3": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
+            "ve4": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75., "wd_mul": 5.0},
             "bigram_embed": {"optim": "adam", "comms": "sharded", "adam_betas": [0.75, 0.95], "lr_mul": 75.,
                              "wd_mul": 5.0},
             "smear_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.01,
@@ -1705,6 +1726,7 @@ class TrainingManager():
             "skip_gate": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99], "lr_mul": 0.05,
                           "wd_mul": 0.0},
             "attn_gate_bank": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99]},
+            "ve_gate_bank": {"optim": "adam", "comms": "replicated", "adam_betas": [0.9, 0.99]},
             "x0_lambdas": {"optim": "adam", "comms": "replicated", "adam_betas": [0.65, 0.95], "lr_mul": 5.0,
                            "wd_mul": 0.0},
             "lm_head": {"optim": "adam", "comms": "sharded", "adam_betas": [0.5, 0.95], "wd_mul": 150.},
@@ -1714,8 +1736,8 @@ class TrainingManager():
         # - Process smaller/faster params first while large reduces complete
         # - lm_head must complete before embed sync (when tied)
         self.work_order = [
-            "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "x0_lambdas",  # Small, fast
-            "bigram_embed",  # Medium
+            "scalars", "smear_gate", "skip_gate", "attn_gate_bank", "ve_gate_bank", "x0_lambdas",  # Small, fast
+            "ve0", "ve1", "ve2", "ve3", "ve4", "bigram_embed",  # Medium
             "lm_head", "embed",  # lm_head must complete before embed sync (when tied)
             "attn", "mlp",  # Large, polar express - process last to maximize overlap
         ]
@@ -1753,7 +1775,12 @@ class TrainingManager():
         mtp_weights_schedule = []
         for s in range(args.num_iterations + 1):
             x = s / args.num_scheduled_iterations
-            w = [1.0]
+            if x < 1 / 3:
+                w = [1.0, 0.5, 0.25 * (1 - 3 * x)]
+            elif x < 2 / 3:
+                w = [1.0, 0.5 * (1 - (3 * x - 1))]
+            else:
+                w = [1.0]
             mtp_weights_schedule.append(torch.tensor(w, device=device))
         return mtp_weights_schedule
 
@@ -1841,10 +1868,10 @@ class Hyperparameters:
     val_files: str = "data/fineweb/fineweb_val_*.bin"  # input .bin to eval validation loss on
     val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # batch sizes
-    train_bs_schedule: tuple = (8 * 2048 * 4, 16 * 2048 * 4, 24 * 2048 * 4)
-    train_bs_extension: int = 24 * 2048 * 4
+    train_bs_schedule: tuple = (8 * 2048 * 8, 16 * 2048 * 8, 24 * 2048 * 8)
+    train_bs_extension: int = 24 * 2048 * 8
     train_max_seq_len: int = 128 * 16
-    val_batch_size: int = 4 * 64 * 1024 * 4
+    val_batch_size: int = 4 * 64 * 1024 * 8
     # optimization
     num_scheduled_iterations: int = 1000  # number of steps to complete lr and ws schedule
     num_extension_iterations: int = 40  # number of steps to continue training at final lr and ws
@@ -1922,7 +1949,7 @@ if __name__ == "__main__":
 
     model: nn.Module = GPT(
         vocab_size=50257,
-        num_layers=42,
+        num_layers=52,
         num_heads=12,
         head_dim=128,
         model_dim=1536,
@@ -1932,6 +1959,7 @@ if __name__ == "__main__":
         if isinstance(m, (nn.Embedding, nn.Linear)):
             m.weight.data = m.weight.data.bfloat16()
     model.attn_gate_bank.data = model.attn_gate_bank.data.bfloat16()
+    model.ve_gate_bank.data = model.ve_gate_bank.data.bfloat16()
     model.attn_bank.data = model.attn_bank.data.bfloat16()
     model.mlp_bank.data = model.mlp_bank.data.bfloat16()
     for param in model.parameters():
@@ -1939,42 +1967,6 @@ if __name__ == "__main__":
 
     model: nn.Module = torch.compile(model, dynamic=False, fullgraph=True)
     training_manager = TrainingManager(model)
-
-    ########################################
-    #            Warmup kernels            #
-    ########################################
-    print0("Compiling model and warming up kernels (~7 minutes on first execution)", console=True)
-    # Warmup the training kernels, then re-initialize the state so we aren't cheating
-    initial_state = dict(model=copy.deepcopy(model.state_dict()),
-                         optimizer=training_manager.get_state())  # save the initial state
-    train_loader = distributed_data_generator(args.train_files, args.train_bs_schedule[0], args.train_max_seq_len,
-                                              grad_accum_steps=grad_accum_steps)
-    val_loader = distributed_data_generator(args.val_files, args.val_batch_size, -1, grad_accum_steps=grad_accum_steps,
-                                            align_to_bos=False)
-
-    transition_steps = training_manager.get_transition_steps()
-    # first few steps plus transitions
-    warmup_steps = sorted({0, 1, 2} | set(s + offset for s in transition_steps for offset in [-1, 0, 1] if s + offset >= 0))
-    print0(f"Sampling steps {warmup_steps} for warmup", console=True)
-    for step in warmup_steps:
-        training_manager.advance_schedule(step)
-        model.eval()
-        with torch.no_grad():
-            inputs, targets, cum_seqlens, bigram_inputs = next(val_loader)
-            model(inputs, targets, cum_seqlens, bigram_inputs, training_manager.get_forward_args())[0]
-        model.train()
-        for idx in range(grad_accum_steps):
-            send_args = training_manager.train_loader_send_args
-            inputs, targets, cum_seqlens, bigram_inputs = train_loader.send(send_args)
-            (model(inputs, targets, cum_seqlens, bigram_inputs,
-                   training_manager.get_forward_args())[0] / grad_accum_steps).backward()
-        training_manager.step_optimizers(step)
-    print0("Resetting Model", console=True)
-    model.zero_grad(set_to_none=True)
-    model.load_state_dict(initial_state["model"])
-    training_manager.reset(initial_state["optimizer"])
-    del val_loader, train_loader, initial_state
-    model.train()
 
     ########################################
     #        Training and validation       #
