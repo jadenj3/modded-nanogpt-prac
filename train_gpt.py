@@ -1935,10 +1935,10 @@ if __name__ == "__main__":
 
     model: nn.Module = GPT(
         vocab_size=50257,
-        num_layers=11,
-        num_heads=6,
+        num_layers=52,
+        num_heads=12,
         head_dim=128,
-        model_dim=768,
+        model_dim=1536,
         max_seq_len=args.val_batch_size // (grad_accum_steps * world_size)
     ).cuda()
     for m in model.modules():
