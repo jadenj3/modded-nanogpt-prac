@@ -1174,6 +1174,13 @@ class GPT(nn.Module):
                  max_seq_len: int):
         super().__init__()
         self.num_layers = num_layers
+        # Derive architectural positions proportionally from num_layers (original ratios from 11-layer model)
+        self.no_attn_layer = round(6 / 11 * num_layers)
+        self.skip_in_layers = [round(3 / 11 * num_layers)]
+        self.skip_out_layers = [self.no_attn_layer]
+        self.backout_layer_idx = round(7 / 11 * num_layers)
+        self.long_attn_layers = {round(3 / 11 * num_layers), round(10 / 11 * num_layers)}
+        self.paired_head_layers = list(range(0, num_layers, 10))
         vocab_size = next_multiple_of_n(vocab_size, n=128)
 
         self.smear_gate = nn.Linear(12, 1, bias=False)
@@ -1193,7 +1200,7 @@ class GPT(nn.Module):
             ve.weight.label = f've{i}'  # ve0, ve1, ve2, ve3, ve4
 
         # parameter banks for attention and value embedding gate weights
-        self.attn_gate_bank = nn.Parameter(torch.zeros(10, num_heads, 12))  # 10 layers
+        self.attn_gate_bank = nn.Parameter(torch.zeros(num_layers - 1, num_heads, 12))  # all layers except no-attn layer
         self.attn_gate_bank.label = 'attn_gate_bank'
         self.ve_gate_bank = nn.Parameter(torch.zeros(5, num_heads, 12))  # 5 unique gates
         self.ve_gate_bank.label = 've_gate_bank'
@@ -1203,7 +1210,7 @@ class GPT(nn.Module):
 
         # Identify which layers have attention/MLP
         # Attention is skipped in layer 6 by @YouJiacheng
-        self.attn_layer_indices = [i for i in range(num_layers) if i != 6]
+        self.attn_layer_indices = [i for i in range(num_layers) if i != self.no_attn_layer]
         # All layers have MLP (At 11 layers--dropped first layer @EmelyanenkoK)
         self.mlp_layer_indices = list(range(num_layers))
 
@@ -1225,10 +1232,12 @@ class GPT(nn.Module):
         self.attn_bank.reshape = (len(self.attn_layer_indices) * 4, hdim, hdim)  # (40, 768, 768)
 
         # MLP bank: stores c_fc and c_proj for all MLP layers
-        # Shape: (num_mlp_layers + padding, 2, mlp_hdim, model_dim) = (12, 2, 3072, 768)
-        # We add 1 padding layer (index 11) to get 12*2=24 matrices for even distribution across 8 GPUs
-        # Reshape for sharding: (24, 3072, 768)
-        num_mlp_with_padding = len(self.mlp_layer_indices) + 1  # 11 + 1 = 12
+        # We pad to ensure total matrices (num_mlp * 2) is divisible by world_size for even sharding
+        total_mlp_matrices = len(self.mlp_layer_indices) * 2
+        ws = dist.get_world_size() if dist.is_initialized() else 1
+        padded = ((total_mlp_matrices + ws - 1) // ws) * ws
+        mlp_pad = (padded - total_mlp_matrices) // 2
+        num_mlp_with_padding = len(self.mlp_layer_indices) + mlp_pad
         self.mlp_bank = nn.Parameter(torch.empty(num_mlp_with_padding, 2, mlp_hdim, model_dim))
         self.mlp_bank.label = 'mlp'
         self.mlp_bank.reshape = (num_mlp_with_padding * 2, mlp_hdim, model_dim)  # (24, 3072, 768)
@@ -1253,7 +1262,6 @@ class GPT(nn.Module):
             self.mlp_bank[:, 1, :, :].zero_()  # c_proj - zero init suggested by @Grad62304977
 
         # Create blocks with has_attn/has_mlp flags
-        self.paired_head_layers = [0, 2, 5, 9]
         self.blocks = nn.ModuleList([
             Block(model_dim, head_dim, num_heads,
                   has_attn=(i in self.layer_to_attn_idx),
@@ -1312,10 +1320,10 @@ class GPT(nn.Module):
 
         # set configs
         skip_connections = []
-        skip_in = [3]  # long attention window on layer 3
-        skip_out = [6]  # no attn op on layer 6
+        skip_in = self.skip_in_layers
+        skip_out = self.skip_out_layers
         x_backout = None
-        backout_layer = 7
+        backout_layer = self.backout_layer_idx
 
         # set lambdas
         resid_lambdas = self.scalars[: 1 * self.num_layers]
@@ -1329,8 +1337,14 @@ class GPT(nn.Module):
         # set block masks and key shift
         short_bm = ws_short * args.block_size
         long_bm = ws_long * args.block_size
-        bm_sizes = [short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, None, short_bm, short_bm, short_bm,
-                    long_bm]
+        bm_sizes = []
+        for i in range(self.num_layers):
+            if i == self.no_attn_layer:
+                bm_sizes.append(None)
+            elif i in self.long_attn_layers:
+                bm_sizes.append(long_bm)
+            else:
+                bm_sizes.append(short_bm)
         assert len(bm_sizes) == self.num_layers
         key_offset = [b == long_bm for b in bm_sizes]  # apply partial key offset to long windows
 
@@ -1352,7 +1366,7 @@ class GPT(nn.Module):
         # unbind gate banks to avoid select_backwards kernel
         ag = [w.bfloat16() for w in self.attn_gate_bank.unbind(0)]
         veg = [w.bfloat16() for w in self.ve_gate_bank.unbind(0)]
-        attn_gates = ag[:6] + [None] + ag[6:]
+        attn_gates = ag[:self.no_attn_layer] + [None] + ag[self.no_attn_layer:]
         ve_gates = [veg[0], veg[1]] + [None] * (self.num_layers - 5) + [veg[2], veg[3], veg[4]]
         assert len(attn_gates) == self.num_layers
         assert len(ve_gates) == self.num_layers
@@ -1394,7 +1408,7 @@ class GPT(nn.Module):
             if i == backout_layer:
                 x_backout = x
 
-        # back out contributions from first 7 layers that are only required for downstream context and not direct prediction
+        # back out contributions from early layers (up to backout_layer_idx) that are only required for downstream context and not direct prediction
         x -= backout_lambda * x_backout
         x = norm(x)
         logits = self.lm_head(x)
