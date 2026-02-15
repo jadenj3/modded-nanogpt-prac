@@ -1659,10 +1659,6 @@ def get_lr(step: int):
         return 0.1
     lr_max = 1.0
     x = step / args.num_scheduled_iterations
-    if x > 1 / 3:
-        lr_max = 1.52  # (16/8)**0.6
-    if x > 2 / 3:
-        lr_max = 1.73  # (24/8)**0.5
     if x >= 1 - args.cooldown_frac:
         w = (1 - x) / args.cooldown_frac
         lr = lr_max * w + (1 - w) * 0.1
