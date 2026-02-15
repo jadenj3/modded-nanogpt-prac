@@ -1870,7 +1870,7 @@ class Hyperparameters:
     # batch sizes
     train_bs_schedule: tuple = (8 * 2048 * 8, 8 * 2048 * 8, 8 * 2048 * 8)
     train_bs_extension: int = 8 * 2048 * 8
-    train_max_seq_len: int = 128 * 16
+    train_max_seq_len: int = 128 * 48
     val_batch_size: int = 4 * 64 * 1024 * 10
     # optimization
     num_scheduled_iterations: int = 1000  # number of steps to complete lr and ws schedule
@@ -1884,9 +1884,9 @@ class Hyperparameters:
     save_checkpoint: bool = True
     # attention masking
     block_size: int = 128
-    ws_schedule: tuple = (3, 7, 11)
-    ws_final: int = 13  # increase final validation ws, used for YaRN extension and short window size @classiclarryd
-    ws_validate_post_yarn_ext: int = 20  # extend long windows out even further after applying YaRN
+    ws_schedule: tuple = (9, 21, 33)
+    ws_final: int = 39  # increase final validation ws, used for YaRN extension and short window size @classiclarryd
+    ws_validate_post_yarn_ext: int = 60  # extend long windows out even further after applying YaRN
     # bigram hash embedding
     bigram_vocab_size = 50304 * 5
 
