@@ -1972,6 +1972,43 @@ if __name__ == "__main__":
     model: nn.Module = torch.compile(model, dynamic=False, fullgraph=True)
     training_manager = TrainingManager(model)
 
+
+    ########################################
+    #            Warmup kernels            #
+    ########################################
+    print0("Compiling model and warming up kernels (~7 minutes on first execution)", console=True)
+    # Warmup the training kernels, then re-initialize the state so we aren't cheating
+    initial_state = dict(model=copy.deepcopy(model.state_dict()),
+                         optimizer=training_manager.get_state())  # save the initial state
+    train_loader = distributed_data_generator(args.train_files, args.train_bs_schedule[0], args.train_max_seq_len,
+                                              grad_accum_steps=grad_accum_steps)
+    val_loader = distributed_data_generator(args.val_files, args.val_batch_size, -1, grad_accum_steps=grad_accum_steps,
+                                            align_to_bos=False)
+
+    transition_steps = training_manager.get_transition_steps()
+    # first few steps plus transitions
+    warmup_steps = sorted({0, 1, 2} | set(s + offset for s in transition_steps for offset in [-1, 0, 1] if s + offset >= 0))
+    print0(f"Sampling steps {warmup_steps} for warmup", console=True)
+    for step in warmup_steps:
+        training_manager.advance_schedule(step)
+        model.eval()
+        with torch.no_grad():
+            inputs, targets, cum_seqlens, bigram_inputs = next(val_loader)
+            model(inputs, targets, cum_seqlens, bigram_inputs, training_manager.get_forward_args())[0]
+        model.train()
+        for idx in range(grad_accum_steps):
+            send_args = training_manager.train_loader_send_args
+            inputs, targets, cum_seqlens, bigram_inputs = train_loader.send(send_args)
+            (model(inputs, targets, cum_seqlens, bigram_inputs,
+                   training_manager.get_forward_args())[0] / grad_accum_steps).backward()
+        training_manager.step_optimizers(step)
+    print0("Resetting Model", console=True)
+    model.zero_grad(set_to_none=True)
+    model.load_state_dict(initial_state["model"])
+    training_manager.reset(initial_state["optimizer"])
+    del val_loader, train_loader, initial_state
+    model.train()
+
     ########################################
     #        Training and validation       #
     ########################################
