@@ -1953,7 +1953,7 @@ if __name__ == "__main__":
 
     model: nn.Module = GPT(
         vocab_size=50257,
-        num_layers=52,
+        num_layers=36,
         num_heads=12,
         head_dim=128,
         model_dim=1536,
