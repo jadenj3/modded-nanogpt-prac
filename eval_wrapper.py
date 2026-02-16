@@ -15,6 +15,7 @@ os.environ.setdefault("WORLD_SIZE", "1")
 os.environ.setdefault("RANK", "0")
 
 import torch
+import torch.nn as nn
 from dataclasses import dataclass
 
 # Import from train_gpt (now safe since training code is in __main__ block)
@@ -127,6 +128,17 @@ def load_for_eval(checkpoint_path, device="cuda"):
         model_dim=model_dim,
         max_seq_len=2048,
     ).to(device)
+
+    # Fix distributed padding mismatches: checkpoint may have been saved with
+    # different world_size, causing different padding on attn_bank, mlp_bank, scalars
+    current_state = model.state_dict()
+    for key, ckpt_tensor in model_data.items():
+        if key in current_state and current_state[key].shape != ckpt_tensor.shape:
+            parts = key.split('.')
+            obj = model
+            for part in parts[:-1]:
+                obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
+            setattr(obj, parts[-1], nn.Parameter(torch.empty_like(ckpt_tensor)))
 
     model.load_state_dict(model_data)
 
