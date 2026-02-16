@@ -110,13 +110,21 @@ def load_for_eval(checkpoint_path, device="cuda"):
     # Handle torch.compile prefix
     model_data = {k.removeprefix("_orig_mod."): v for k, v in checkpoint["model"].items()}
 
-    # Create model with hardcoded config (matches train_gpt.py)
+    # Infer model config from checkpoint shapes
+    model_dim = model_data["embed.weight"].shape[1]
+    vocab_size_raw = model_data["embed.weight"].shape[0]
+    num_heads = model_data["attn_gate_bank"].shape[1]
+    num_layers = model_data["attn_gate_bank"].shape[0] + 1  # bank has num_layers-1 entries
+    hdim = model_data["attn_bank"].shape[2]  # num_heads * head_dim
+    head_dim = hdim // num_heads
+
+    # Create model with config inferred from checkpoint
     model = GPT(
-        vocab_size=50257,
-        num_layers=11,
-        num_heads=6,
-        head_dim=128,
-        model_dim=768,
+        vocab_size=vocab_size_raw,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        model_dim=model_dim,
         max_seq_len=2048,
     ).to(device)
 
