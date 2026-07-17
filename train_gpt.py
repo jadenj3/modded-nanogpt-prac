@@ -158,6 +158,7 @@ class CausalSelfAttention(nn.Module):
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
+        self.qk_capture: list | None = None # when set to a list, forward appends (q, k) for attention-distance analysis
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, lambdas: Tensor):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -170,7 +171,12 @@ class CausalSelfAttention(nn.Module):
             v = lambdas[0] * v + lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = lambdas[0] * v
-        y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
+        attn_fn = flex_attention
+        if self.qk_capture is not None: # analysis pass (runs outside the compiled model, see attn_distance_histograms)
+            self.qk_capture.append((q, k))
+            # eager flex_attention ignores the block mask's kv sparsity (the sliding window), so use a compiled one
+            attn_fn = analysis_flex_attention
+        y = attn_fn(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = F.linear(y, self.qkvo_w[3])
         return y
@@ -311,6 +317,93 @@ class GPT(nn.Module):
         return loss
 
 # -----------------------------------------------------------------------------
+# Attention distance analysis
+# Measures two things separately:
+#   1. where attention mass is allocated as a function of query-key distance d = i - j
+#      (dense causal+document attention recomputed from the model's own q/k), and
+#   2. how much masking out distant tokens changes the val loss (the window_sweep in the
+#      training loop) - removal-based output error, closer to actual importance.
+
+# The uncompiled flex_attention fallback applies only mask_mod (causal+document) and ignores
+# the BlockMask's kv-block sparsity, i.e. the sliding window. So the analysis forward pass
+# (which runs outside the compiled model) routes attention through this separately compiled
+# flex_attention to reproduce the exact training-regime residual stream. Compiles lazily on first use.
+analysis_flex_attention = torch.compile(flex_attention, dynamic=False)
+
+@torch.no_grad()
+def attn_distance_histograms(model: GPT, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, q_chunk=2048):
+    """Per (attention layer, head), histogram over distance d = i - j of dense (causal +
+    document masked) attention mass, summed over query tokens. The residual stream feeding
+    each layer's q/k is the model's own, computed under its usual sliding-window masks; only
+    the histogram itself uses dense attention, so cumulative mass C(w) answers "what fraction
+    of dense attention would a sliding window of size w retain".
+    Returns (mass: (L, H, T), count: (T,), layer_ids) where count[d] is the number of
+    eligible (query, key) pairs at distance d."""
+    attn_layers = [(i, block.attn) for i, block in enumerate(model.blocks) if block.attn is not None]
+    for _, attn in attn_layers:
+        attn.qk_capture = []
+    try:
+        model(input_seq, target_seq, sliding_window_num_blocks)
+    finally:
+        captures = [attn.qk_capture for _, attn in attn_layers]
+        for _, attn in attn_layers:
+            attn.qk_capture = None
+    qks = []
+    for capture in captures:
+        (q, k), = capture # each layer captured exactly once; (1, T, H, D)
+        qks.append((q[0].transpose(0, 1), k[0].transpose(0, 1))) # (H, T, D)
+    T = input_seq.size(0)
+    num_heads = qks[0][0].size(0)
+    docs = (input_seq == 50256).cumsum(0)
+    pos = torch.arange(T, device=input_seq.device)
+    mass = torch.zeros(len(attn_layers), num_heads, T, device=input_seq.device)
+    count = torch.zeros(T, device=input_seq.device)
+    for i0 in range(0, T, q_chunk): # chunk over query tokens to bound memory
+        d = pos[i0:i0 + q_chunk, None] - pos[None, :] # (Q, T) query-key distance
+        valid = (d >= 0) & (docs[i0:i0 + q_chunk, None] == docs[None, :]) # causal + document mask
+        idx = d.clamp_min(0).flatten() # masked pairs get prob 0 / count 0, so the clamped index is harmless
+        count.scatter_add_(0, idx, valid.flatten().to(count.dtype))
+        for li, ((_, attn), (qh, kh)) in enumerate(zip(attn_layers, qks)):
+            logits = (qh[:, i0:i0 + q_chunk] @ kh.mT).float() * attn.attn_scale # (H, Q, T)
+            probs = logits.masked_fill_(~valid, float("-inf")).softmax(-1) # (H, Q, T)
+            for h in range(num_heads):
+                mass[li, h].scatter_add_(0, idx, probs[h].flatten())
+    return mass, count, [i for i, _ in attn_layers]
+
+def print_attn_distance_summary(mass: Tensor, count: Tensor, layer_ids: list, step: int):
+    mass, count = mass.double().cpu(), count.double().cpu()
+    num_heads, T = mass.size(1), mass.size(2)
+    edges = [0, 1] # log2 bins: [0], [1], [2,3], [4,7], ...
+    while edges[-1] < T:
+        edges.append(min(2 * edges[-1], T))
+    bins = list(zip(edges[:-1], edges[1:]))
+    labels = [f"{lo}" if hi == lo + 1 else f"{lo}-{hi - 1}" for lo, hi in bins]
+
+    def radius(c: Tensor, frac: float): # smallest w such that C(w) >= frac
+        return int(torch.searchsorted(c, frac))
+
+    def summarize(tag: str, m: Tensor, heads: int, console: bool):
+        p = m / m.sum() # distribution of attention mass over distance, i.e. E_{i,h}
+        c = p.cumsum(0) # C(w): fraction of dense attention retained by a window of size w
+        cw = " ".join(f"C{w}:{c[min(w, T - 1)]:.4f}" for w in (128, 896, 1792))
+        print0(f"attn_dist step:{step} {tag} r50:{radius(c, 0.5)} r90:{radius(c, 0.9)} r95:{radius(c, 0.95)} {cw}", console=console)
+        print0(f"attn_dist step:{step} {tag} mass " + " ".join(
+            f"[{lab}]:{p[lo:hi].sum():.4f}" for (lo, hi), lab in zip(bins, labels)), console=console)
+        # per-token density: average probability that one eligible key token at this distance receives
+        print0(f"attn_dist step:{step} {tag} density " + " ".join(
+            f"[{lab}]:{m[lo:hi].sum() / (heads * count[lo:hi].sum()):.2e}"
+            for (lo, hi), lab in zip(bins, labels) if count[lo:hi].sum() > 0), console=console)
+
+    print0(f"attn_dist step:{step} eligible_pairs " + " ".join(
+        f"[{lab}]:{int(count[lo:hi].sum())}" for (lo, hi), lab in zip(bins, labels)))
+    for li, layer in enumerate(layer_ids):
+        summarize(f"layer:{layer}", mass[li].sum(dim=0), num_heads, console=False)
+        head_cum = (mass[li] / mass[li].sum(dim=-1, keepdim=True)).cumsum(dim=-1)
+        print0(f"attn_dist step:{step} layer:{layer} head_r90 " + " ".join(
+            f"h{h}:{radius(head_cum[h], 0.9)}" for h in range(num_heads)))
+    summarize("all_layers", mass.sum(dim=(0, 1)), num_heads * len(layer_ids), console=True)
+
+# -----------------------------------------------------------------------------
 # Our own simple Distributed Data Loader
 
 def _load_data_shard(file: Path):
@@ -359,6 +452,9 @@ class Hyperparameters:
     # evaluation and logging
     val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
     save_checkpoint = False
+    # attention distance analysis
+    attn_stats_seq_len = 64*1024 # tokens per attention-distance histogram pass (runs at each val step); 0 disables
+    window_sweep_blocks = (1, 2, 4, 7, 14, 64, 2048) # window sizes (128-token blocks) for the end-of-run removal sweep; 2048 blocks = dense at 256K val seq len; () disables
 args = Hyperparameters()
 
 run_id = int(os.environ.get("RUN_ID", 0))
@@ -369,6 +465,7 @@ world_size = int(os.environ["WORLD_SIZE"])
 assert torch.cuda.is_available()
 device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
 torch.cuda.set_device(device)
+torch.manual_seed(12)
 dist.init_process_group(backend="nccl", device_id=device)
 dist.barrier()
 master_process = (rank == 0) # this process will do logging, checkpointing etc.
@@ -465,6 +562,7 @@ def get_window_size_blocks(step: int):
     window_size = next_multiple_of_n(1728 * x, n=128)
     return get_window_size_blocks_helper(window_size)
 
+eager_model: GPT = model # uncompiled reference for the attention-distance analysis pass
 model: nn.Module = torch.compile(model, dynamic=False)
 
 ########################################
@@ -521,12 +619,37 @@ for step in range(train_steps + 1):
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
+        # --------------- ATTENTION DISTANCE ANALYSIS --------
+        if master_process and args.attn_stats_seq_len > 0: # runs off the training clock; no collectives, so master only
+            n = args.attn_stats_seq_len # reuse the first n tokens of the last val batch
+            mass, count, layer_ids = attn_distance_histograms(eager_model, inputs[:n], targets[:n], get_window_size_blocks(step))
+            print_attn_distance_summary(mass, count, layer_ids, step)
+            torch.save(dict(step=step, mass=mass.cpu(), count=count.cpu(), layers=layer_ids),
+                       f"logs/{run_id_full}_attn_stats_step{step:06d}.pt")
         model.train()
         # start the clock again
         dist.barrier()
         t0 = time.perf_counter()
 
     if last_step:
+        # --------------- ATTENTION WINDOW SWEEP -------------
+        # Removal-based importance: re-evaluate val loss with restricted (or dense) attention
+        # windows. The mass histograms say where attention goes; this says how much the loss
+        # actually degrades when tokens beyond each distance are masked out.
+        if args.window_sweep_blocks:
+            model.eval()
+            sweep_steps = max(1, val_steps // 4)
+            with torch.no_grad():
+                for w in args.window_sweep_blocks:
+                    sweep_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
+                    sweep_loss = 0
+                    for _ in range(sweep_steps):
+                        inputs, targets = next(sweep_loader)
+                        sweep_loss += model(inputs, targets, torch.tensor(w, dtype=torch.int32, device="cuda"))
+                    sweep_loss /= sweep_steps
+                    del sweep_loader
+                    dist.all_reduce(sweep_loss, op=dist.ReduceOp.AVG)
+                    print0(f"window_sweep step:{step} window_blocks:{w} window_tokens:{128*w} val_loss:{sweep_loss:.6f} val_tokens:{sweep_steps*val_batch_size}", console=True)
         if master_process and args.save_checkpoint:
             log = dict(step=step, code=code, model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
             os.makedirs(f"logs/{run_id_full}", exist_ok=True)
