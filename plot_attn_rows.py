@@ -15,6 +15,7 @@ Run in a Jupyter notebook on the machine that holds the logs:
 
     %run plot_attn_rows.py                  # most recently written run in logs/, all val steps
     %run plot_attn_rows.py 923bef0b         # a specific run, by any unique substring of its name
+    %run plot_attn_rows.py --linear         # linear y-axis (shows mass; log shows shape and reach)
 
 or, for control:
 
@@ -73,7 +74,7 @@ def style_axes(ax):
     ax.set_axisbelow(True)
 
 
-def plot_step(run, step, snap, ylim):
+def plot_step(run, step, snap, ylim, linear=False):
     rows = snap["rows"].double().numpy()  # (L, H, 2, D) attention weight vs distance-from-query
     layers, long_layers = list(snap["layers"]), set(snap["long_layers"])
     wb, H, D = snap["window_blocks"], rows.shape[1], rows.shape[-1]
@@ -93,10 +94,10 @@ def plot_step(run, step, snap, ylim):
         w_tokens = w_long if is_long else w_short
         for qi, (name, color) in enumerate(QUERIES):
             y = per_layer[idx, qi]
-            m = y > 0
+            m = np.ones(D, bool) if linear else y > 0  # linear can show the drop to exact 0; log can't
             # a 1-block window leaves the block-aligned middle token attending only to itself:
             # too few points for a line, so mark them individually
-            marker = "o" if m.sum() <= 3 else None
+            marker = "o" if (y > 0).sum() <= 3 else None
             ax.plot(np.arange(D)[m], y[m], color=color, linewidth=1.6, label=name,
                     marker=marker, markersize=5, markeredgecolor=SURFACE, markeredgewidth=1)
         ax.axvline(w_tokens, color=AXIS, linewidth=1.0, linestyle=(0, (4, 3)))
@@ -105,7 +106,8 @@ def plot_step(run, step, snap, ylim):
                 rotation=90, ha="right", va="top", transform=ax.get_xaxis_transform())
         ax.set_xscale("symlog", linthresh=1)
         ax.set_xlim(0, xmax)
-        ax.set_yscale("log")
+        if not linear:
+            ax.set_yscale("log")
         ax.set_ylim(*ylim)
         ax.set_title(f"layer {layer} · {'long' if is_long else 'short'} window",
                      color=INK, fontsize=9.5, loc="left", pad=4)
@@ -120,7 +122,7 @@ def plot_step(run, step, snap, ylim):
         low.tick_params(labelbottom=True)
         low.set_xlabel("how far back the key token sits (0 = the query itself)", color=INK2, fontsize=8.5)
     for ax in axes[:, 0]:
-        ax.set_ylabel("attention weight (log)", color=INK2, fontsize=8.5)
+        ax.set_ylabel("attention weight" if linear else "attention weight (log)", color=INK2, fontsize=8.5)
 
     # summary cell: legend + reading guide
     ax = axes.flat[len(layers)]
@@ -157,27 +159,28 @@ def plot_step(run, step, snap, ylim):
     return fig
 
 
-def plot_attn_rows(logs_dir="logs", run=None):
+def plot_attn_rows(logs_dir="logs", run=None, linear=False):
     run, snaps = load_run(logs_dir, run)
     # one shared y-range across all steps so figures are comparable step-to-step
     lo, hi = np.inf, 0
     for snap in snaps.values():
         w = snap["rows"].double().numpy().mean(axis=1)
         lo, hi = min(lo, w[w > 0].min()), max(hi, w.max())
-    ylim = (10 ** np.floor(np.log10(lo)), 10 ** np.ceil(np.log10(hi)))
+    ylim = (0, 1.05 * hi) if linear else (10 ** np.floor(np.log10(lo)), 10 ** np.ceil(np.log10(hi)))
 
     figs = {}
     print(f"{'step':>6} {'window':>8} {'row sums (min..max, should be 1)':>34}")
     for step, snap in snaps.items():
         sums = snap["rows"].double().sum(dim=-1)  # (L, H, 2), each should be ~1
         print(f"{step:>6} {128 * snap['window_blocks']:>8,} {f'{sums.min():.4f} .. {sums.max():.4f}':>34}")
-        figs[step] = plot_step(run, step, snap, ylim)
-        out = f"{run}_attn_rows_step{step:06d}.png"
+        figs[step] = plot_step(run, step, snap, ylim, linear=linear)
+        out = f"{run}_attn_rows_step{step:06d}{'_linear' if linear else ''}.png"
         figs[step].savefig(out, dpi=200, facecolor=SURFACE, bbox_inches="tight")
         print(f"saved {out}")
     return figs
 
 
 if __name__ == "__main__":
-    plot_attn_rows(run=sys.argv[1] if len(sys.argv) > 1 else None)
+    argv = [a for a in sys.argv[1:] if a != "--linear"]
+    plot_attn_rows(run=argv[0] if argv else None, linear="--linear" in sys.argv)
     plt.show()
