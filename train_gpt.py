@@ -315,10 +315,12 @@ class GPT(nn.Module):
             loss = F.cross_entropy(15 * logits * torch.rsqrt(logits.square() + 225), target_seq)
             return loss
 
+        # 16 chunks (up from 4) keeps the fp32 logits transient ~3GB instead of ~13GB, which the
+        # uncompiled attn-viz pass at val_seq_len pays in full; equal chunks, so the loss is unchanged
         loss = 0
-        for i in range(4):
-            logits: Tensor = F.linear(x.flatten(end_dim=1).chunk(4)[i], self.lm_head_w.bfloat16()).float()
-            loss += F.cross_entropy(15 * logits * torch.rsqrt(logits.square() + 225), target_seq.chunk(4)[i]) / 4
+        for i in range(16):
+            logits: Tensor = F.linear(x.flatten(end_dim=1).chunk(16)[i], self.lm_head_w.bfloat16()).float()
+            loss += F.cross_entropy(15 * logits * torch.rsqrt(logits.square() + 225), target_seq.chunk(16)[i]) / 16
         return loss
 
 # -----------------------------------------------------------------------------
