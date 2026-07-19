@@ -5,6 +5,7 @@ with open(sys.argv[0]) as f:
 import uuid
 import time
 import copy
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -159,6 +160,7 @@ class CausalSelfAttention(nn.Module):
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
         self.qk_capture: list | None = None # when set to a list, forward appends (q, k) for attention-distance analysis
+        self.q_sel_idx: Tensor | None = None # when also set, only these query positions of q are captured (keys stay full)
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, lambdas: Tensor):
         B, T = x.size(0), x.size(1) # batch size, sequence length
@@ -173,7 +175,7 @@ class CausalSelfAttention(nn.Module):
             v = lambdas[0] * v
         attn_fn = flex_attention
         if self.qk_capture is not None: # analysis pass (runs outside the compiled model, see attn_distance_histograms)
-            self.qk_capture.append((q, k))
+            self.qk_capture.append((q if self.q_sel_idx is None else q[:, self.q_sel_idx], k))
             # eager flex_attention ignores the block mask's kv sparsity (the sliding window), so use a compiled one
             attn_fn = analysis_flex_attention
         y = attn_fn(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
@@ -215,6 +217,10 @@ class Block(nn.Module):
 
 def next_multiple_of_n(v: float | int, *, n: int):
     return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
+
+# Long-short SWA by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper:
+# these layers use the long (full-size) sliding window; all other attention layers use the short (half-size) one
+LONG_WINDOW_LAYERS = (0, 4, 11, 15)
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, num_layers: int, num_heads: int, model_dim: int, max_seq_len: int):
@@ -284,8 +290,7 @@ class GPT(nn.Module):
         assert len(ve) == len(self.blocks)
 
         long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
-        block_masks = [long_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, short_bm, short_bm, short_bm, long_bm, short_bm, short_bm, short_bm, long_bm]
-        assert len(block_masks) == len(self.blocks)
+        block_masks = [long_bm if i in LONG_WINDOW_LAYERS else short_bm for i in range(len(self.blocks))]
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
@@ -330,6 +335,20 @@ class GPT(nn.Module):
 # flex_attention to reproduce the exact training-regime residual stream. Compiles lazily on first use.
 analysis_flex_attention = torch.compile(flex_attention, dynamic=False)
 
+@contextmanager
+def capture_qk(attn_layers: list, q_sel_idx: Tensor | None = None):
+    """Arm qk_capture (and optional query-row slicing via q_sel_idx) on the given layers,
+    yield the per-layer capture lists that forward fills, and always disarm both fields."""
+    for _, attn in attn_layers:
+        attn.qk_capture = []
+        attn.q_sel_idx = q_sel_idx
+    try:
+        yield [attn.qk_capture for _, attn in attn_layers]
+    finally:
+        for _, attn in attn_layers:
+            attn.qk_capture = None
+            attn.q_sel_idx = None
+
 @torch.no_grad()
 def attn_distance_histograms(model: GPT, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, q_chunk=2048):
     """Per (attention layer, head), histogram over distance d = i - j of dense (causal +
@@ -340,14 +359,8 @@ def attn_distance_histograms(model: GPT, input_seq: Tensor, target_seq: Tensor, 
     Returns (mass: (L, H, T), count: (T,), layer_ids) where count[d] is the number of
     eligible (query, key) pairs at distance d."""
     attn_layers = [(i, block.attn) for i, block in enumerate(model.blocks) if block.attn is not None]
-    for _, attn in attn_layers:
-        attn.qk_capture = []
-    try:
+    with capture_qk(attn_layers) as captures:
         model(input_seq, target_seq, sliding_window_num_blocks)
-    finally:
-        captures = [attn.qk_capture for _, attn in attn_layers]
-        for _, attn in attn_layers:
-            attn.qk_capture = None
     qks = []
     for capture in captures:
         (q, k), = capture # each layer captured exactly once; (1, T, H, D)
@@ -403,6 +416,41 @@ def print_attn_distance_summary(mass: Tensor, count: Tensor, layer_ids: list, st
             f"h{h}:{radius(head_cum[h], 0.9)}" for h in range(num_heads)))
     summarize("all_layers", mass.sum(dim=(0, 1)), num_heads * len(layer_ids), console=True)
 
+@torch.no_grad()
+def attn_query_rows(model: GPT, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor, query_idx: Tensor):
+    """Exact attention distributions (each sums to 1) that the given query tokens place over
+    the keys behind them, recomputed from the model's own q/k under the full causal + document
+    + block-wise sliding-window mask. Long-window layers use sliding_window_num_blocks, short-
+    window layers half that (min 1 block), mirroring create_blockmasks. Returns
+    (rows: (L, H, Q, 128*wb_long), layer_ids) where rows[l, h, qi, d] is the weight query
+    query_idx[qi] places on the key d tokens back (0 beyond the layer's window)."""
+    attn_layers = [(i, block.attn) for i, block in enumerate(model.blocks) if block.attn is not None]
+    with capture_qk(attn_layers, q_sel_idx=query_idx) as captures:
+        model(input_seq, target_seq, sliding_window_num_blocks)
+    T = input_seq.size(0)
+    # CAUTION: the mask below hand-mirrors create_blockmasks (doc token 50256, 128-token blocks,
+    # short window = long // 2 with min 1 block). Softmax renormalizes under whatever mask is used,
+    # so if create_blockmasks changes and this drifts, rows still sum to 1 and look plausible —
+    # update the two together.
+    wb_long = int(sliding_window_num_blocks)
+    d_max = 128 * wb_long # max window reach: query in block b sees keys down to block b - (wb - 1), i.e. distance <= 128*wb - 1
+    docs = (input_seq == 50256).cumsum(0)
+    pos = torch.arange(T, device=input_seq.device)
+    d = query_idx[:, None] - pos[None, :] # (Q, T) how far behind each query each key sits
+    causal_doc = (d >= 0) & (docs[query_idx][:, None] == docs[None, :])
+    num_heads = captures[0][0][0].size(-2)
+    rows = torch.zeros(len(attn_layers), num_heads, len(query_idx), d_max, device=input_seq.device)
+    for li, ((layer_id, attn), capture) in enumerate(zip(attn_layers, captures)):
+        (q_sel, k), = capture # each layer captured exactly once; q_sel: (1, Q, H, D), k: (1, T, H, D)
+        wb = wb_long if layer_id in LONG_WINDOW_LAYERS else max(wb_long // 2, 1)
+        allowed = causal_doc & (query_idx[:, None] // 128 - pos[None, :] // 128 < wb)
+        logits = (q_sel[0].transpose(0, 1) @ k[0].transpose(0, 1).mT).float() * attn.attn_scale # (H, Q, T)
+        probs = logits.masked_fill_(~allowed, float("-inf")).softmax(-1)
+        for qi in range(len(query_idx)):
+            sel = allowed[qi] & (d[qi] < d_max)
+            rows[li, :, qi, d[qi][sel]] = probs[:, qi, sel]
+    return rows, [i for i, _ in attn_layers]
+
 # -----------------------------------------------------------------------------
 # Our own simple Distributed Data Loader
 
@@ -454,6 +502,7 @@ class Hyperparameters:
     save_checkpoint = False
     # attention distance analysis
     attn_stats_seq_len = 64*1024 # tokens per attention-distance histogram pass (runs at each val step); 0 disables
+    attn_viz = True # save middle/last-token attention rows averaged over the val loop at each val step (plot with plot_attn_rows.py)
     window_sweep_blocks = (1, 2, 4, 7, 14, 64, 2048) # window sizes (128-token blocks) for the end-of-run removal sweep; 2048 blocks = dense at 256K val seq len; () disables
 args = Hyperparameters()
 
@@ -611,13 +660,22 @@ for step in range(train_steps + 1):
         val_steps = args.val_tokens // val_batch_size
         val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
         val_loss = 0
+        viz_rows, viz_batches = None, 0
         with torch.no_grad():
             for _ in range(val_steps):
                 inputs, targets = next(val_loader)
                 val_loss += model(inputs, targets, get_window_size_blocks(step))
+                # --------------- MIDDLE/LAST TOKEN ATTENTION ROWS ---
+                if args.attn_viz: # off the training clock; every rank captures its shard so the average covers the whole val set
+                    query_idx = torch.tensor([inputs.size(0) // 2, inputs.size(0) - 1], device=inputs.device)
+                    rows, viz_layer_ids = attn_query_rows(eager_model, inputs, targets, get_window_size_blocks(step), query_idx)
+                    viz_rows = rows if viz_rows is None else viz_rows + rows
+                    viz_batches += 1
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+        if viz_rows is not None:
+            dist.all_reduce(viz_rows, op=dist.ReduceOp.AVG)
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
         # --------------- ATTENTION DISTANCE ANALYSIS --------
         if master_process and args.attn_stats_seq_len > 0: # runs off the training clock; no collectives, so master only
@@ -626,6 +684,12 @@ for step in range(train_steps + 1):
             print_attn_distance_summary(mass, count, layer_ids, step)
             torch.save(dict(step=step, mass=mass.cpu(), count=count.cpu(), layers=layer_ids),
                        f"logs/{run_id_full}_attn_stats_step{step:06d}.pt")
+        if master_process and viz_rows is not None:
+            torch.save(dict(step=step, rows=(viz_rows / viz_batches).cpu(), layers=viz_layer_ids,
+                            long_layers=list(LONG_WINDOW_LAYERS), window_blocks=int(get_window_size_blocks(step)),
+                            seq_len=args.val_seq_len, query_names=["middle", "last"],
+                            num_batches=viz_batches * world_size),
+                       f"logs/{run_id_full}_attn_rows_step{step:06d}.pt")
         model.train()
         # start the clock again
         dist.barrier()
