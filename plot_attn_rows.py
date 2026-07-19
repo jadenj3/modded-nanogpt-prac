@@ -13,15 +13,18 @@ width marked, so you can watch the distributions track the window as it grows
 
 Run in a Jupyter notebook on the machine that holds the logs:
 
-    %run plot_attn_rows.py                  # newest run in logs/, all val steps
+    %run plot_attn_rows.py                  # most recently written run in logs/, all val steps
+    %run plot_attn_rows.py 923bef0b         # a specific run, by any unique substring of its name
 
 or, for control:
 
     from plot_attn_rows import plot_attn_rows
-    figs = plot_attn_rows("logs")           # {step: matplotlib Figure}
+    figs = plot_attn_rows("logs", run="923bef0b")   # {step: matplotlib Figure}
 """
 import glob
+import os
 import re
+import sys
 
 import numpy as np
 import torch
@@ -33,7 +36,9 @@ INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d
 QUERIES = [("middle token", BLUE), ("last token", GREEN)]
 
 
-def load_newest_run(logs_dir="logs"):
+def load_run(logs_dir="logs", run=None):
+    """Load one run's snapshots. run=None picks the most recently written run; otherwise
+    run is matched as a substring of the run prefix (e.g. "000_923bef0b" or a full uuid)."""
     files = glob.glob(f"{logs_dir}/*_attn_rows_step*.pt")
     if not files:
         raise FileNotFoundError(f"no *_attn_rows_step*.pt files under {logs_dir}/")
@@ -44,9 +49,17 @@ def load_newest_run(logs_dir="logs"):
             runs.setdefault(m.group(1), []).append((int(m.group(2)), f))
     if not runs:
         raise FileNotFoundError(f"no parseable *_attn_rows_step<digits>.pt files under {logs_dir}/")
-    run = max(runs, key=lambda r: max(f for _, f in runs[r]))  # newest run by filename
-    snaps = {step: torch.load(f, map_location="cpu") for step, f in sorted(runs[run])}
-    return run, snaps
+    if run is None:
+        chosen = max(runs, key=lambda r: max(os.path.getmtime(f) for _, f in runs[r]))
+    else:
+        matches = [r for r in runs if run in r]
+        if not matches:
+            raise FileNotFoundError(f"no run matching {run!r}; available: {sorted(runs)}")
+        if len(matches) > 1:
+            raise ValueError(f"run {run!r} is ambiguous; matches: {sorted(matches)}")
+        chosen = matches[0]
+    snaps = {step: torch.load(f, map_location="cpu") for step, f in sorted(runs[chosen])}
+    return chosen, snaps
 
 
 def style_axes(ax):
@@ -144,8 +157,8 @@ def plot_step(run, step, snap, ylim):
     return fig
 
 
-def plot_attn_rows(logs_dir="logs"):
-    run, snaps = load_newest_run(logs_dir)
+def plot_attn_rows(logs_dir="logs", run=None):
+    run, snaps = load_run(logs_dir, run)
     # one shared y-range across all steps so figures are comparable step-to-step
     lo, hi = np.inf, 0
     for snap in snaps.values():
@@ -166,5 +179,5 @@ def plot_attn_rows(logs_dir="logs"):
 
 
 if __name__ == "__main__":
-    plot_attn_rows()
+    plot_attn_rows(run=sys.argv[1] if len(sys.argv) > 1 else None)
     plt.show()
