@@ -276,21 +276,43 @@ class GPT(nn.Module):
         document_blockmask_all = (docs_low[:, None] == docs_high) & (docs_high[:, None] == docs_low)
         blockmask_any = causal_blockmask_any & document_blockmask_any
         blockmask_all = causal_blockmask_all & document_blockmask_all
-        partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
+        def dense_to_ordered_asc(dense_blockmask: Tensor):
+            # True blocks first, in ascending index order: for the q (backward) direction the
+            # nearest in-window blocks are the lowest query-block indices
+            num_blocks = dense_blockmask.sum(dim=-1, dtype=torch.int32)
+            indices = (~dense_blockmask).to(torch.int8).argsort(dim=-1, stable=True).to(torch.int32)
+            return num_blocks[None, None].contiguous(), indices[None, None].contiguous()
+
+        blockmask_partial = blockmask_any & ~blockmask_all
+        partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_partial)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
-        # per-head windows: the kv block indices are identical for every head, only the counts differ
-        partial_kv_indices_h = partial_kv_indices.expand(1, self.num_heads, -1, -1).contiguous()
-        full_kv_indices_h = full_kv_indices.expand(1, self.num_heads, -1, -1).contiguous()
+        # q-direction (backward) base tables from the transposed block masks. Building these here and
+        # window-clamping the counts below (mirroring the kv direction) skips from_kv_blocks'
+        # _transpose_ordered, which re-materializes a dense mask + full argsort per (variant, head).
+        partial_q_num_blocks, partial_q_indices = dense_to_ordered_asc(blockmask_partial.mT)
+        full_q_num_blocks, full_q_indices = dense_to_ordered_asc(blockmask_all.mT)
+        # per-head windows: the block indices are identical for every head, only the counts differ
+        def expand_h(t: Tensor) -> Tensor:
+            return t.expand(1, self.num_heads, -1, -1).contiguous()
+        partial_kv_indices_h, full_kv_indices_h = expand_h(partial_kv_indices), expand_h(full_kv_indices)
+        partial_q_indices_h, full_q_indices_h = expand_h(partial_q_indices), expand_h(full_q_indices)
         head_idx = torch.arange(self.num_heads, device="cuda")
         def build_bm(window_size_blocks: Tensor, num_capped: int) -> BlockMask:
             # first num_capped heads are capped at HEAD_CAP_BLOCKS blocks; the rest get the scheduled window
             w = torch.where(head_idx < num_capped, torch.clamp_max(window_size_blocks, HEAD_CAP_BLOCKS), window_size_blocks).view(1, -1, 1)
-            return BlockMask.from_kv_blocks(
-                torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(w - full_kv_num_blocks, 1)),
-                partial_kv_indices_h,
-                torch.clamp_max(full_kv_num_blocks, w - 1),
-                full_kv_indices_h,
-                BLOCK_SIZE=BLOCK_SIZE,
+            # nearest-w-blocks window via count clamping, applied identically in both directions so the
+            # backward tables are exactly the transpose of the forward mask (verified vs from_kv_blocks)
+            return BlockMask(
+                seq_lengths=(len(input_seq), len(input_seq)),
+                kv_num_blocks=torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(w - full_kv_num_blocks, 1)),
+                kv_indices=partial_kv_indices_h,
+                full_kv_num_blocks=torch.clamp_max(full_kv_num_blocks, w - 1),
+                full_kv_indices=full_kv_indices_h,
+                q_num_blocks=torch.clamp_max(partial_q_num_blocks, torch.clamp_min(w - full_q_num_blocks, 1)),
+                q_indices=partial_q_indices_h,
+                full_q_num_blocks=torch.clamp_max(full_q_num_blocks, w - 1).clamp_min(0), # w=0 short masks: from_kv_blocks' transpose yields 0, not -1
+                full_q_indices=full_q_indices_h,
+                BLOCK_SIZE=(BLOCK_SIZE, BLOCK_SIZE),
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
