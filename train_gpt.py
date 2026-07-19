@@ -221,10 +221,19 @@ def next_multiple_of_n(v: float | int, *, n: int):
 # Long-short SWA by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper:
 # these layers use the long (full-size) sliding window; all other attention layers use the short (half-size) one
 LONG_WINDOW_LAYERS = (0, 4, 11, 15)
+# Per-head sliding-window caps, informed by the attn_dist histograms (most heads are far more local
+# than their window): in each layer, the first CAPPED_HEADS[i] of the 8 heads are restricted to
+# HEAD_CAP_BLOCKS blocks for the whole run; the rest keep the full scheduled window. Which indices
+# are capped is arbitrary - the mask breaks the symmetry and assigns the local roles to those heads.
+# Aggressive on early layers (overwhelmingly local in the histograms); every layer keeps >= 2
+# full-window heads; layer 15, the broadest reader, keeps 6. Layer 7 has no attention.
+HEAD_CAP_BLOCKS = 2 # capped heads attend within 2*128 = 256 tokens (block-granular, so reach is 129-256 depending on position)
+CAPPED_HEADS = (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 3, 3, 2) # of 8 heads, per layer
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, num_layers: int, num_heads: int, model_dim: int, max_seq_len: int):
         super().__init__()
+        self.num_heads = num_heads
         self.embed = nn.Embedding(vocab_size, model_dim)
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
@@ -269,17 +278,34 @@ class GPT(nn.Module):
         blockmask_all = causal_blockmask_all & document_blockmask_all
         partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(blockmask_any & ~blockmask_all)
         full_kv_num_blocks, full_kv_indices = dense_to_ordered(blockmask_all)
-        def build_bm(window_size_blocks: Tensor) -> BlockMask:
+        # per-head windows: the kv block indices are identical for every head, only the counts differ
+        partial_kv_indices_h = partial_kv_indices.expand(1, self.num_heads, -1, -1).contiguous()
+        full_kv_indices_h = full_kv_indices.expand(1, self.num_heads, -1, -1).contiguous()
+        head_idx = torch.arange(self.num_heads, device="cuda")
+        def build_bm(window_size_blocks: Tensor, num_capped: int) -> BlockMask:
+            # first num_capped heads are capped at HEAD_CAP_BLOCKS blocks; the rest get the scheduled window
+            w = torch.where(head_idx < num_capped, torch.clamp_max(window_size_blocks, HEAD_CAP_BLOCKS), window_size_blocks).view(1, -1, 1)
             return BlockMask.from_kv_blocks(
-                torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(window_size_blocks - full_kv_num_blocks, 1)),
-                partial_kv_indices,
-                torch.clamp_max(full_kv_num_blocks, window_size_blocks - 1),
-                full_kv_indices,
+                torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(w - full_kv_num_blocks, 1)),
+                partial_kv_indices_h,
+                torch.clamp_max(full_kv_num_blocks, w - 1),
+                full_kv_indices_h,
                 BLOCK_SIZE=BLOCK_SIZE,
                 mask_mod=document_causal,
             )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
+        cache = {}
+        block_masks = []
+        for i in range(len(self.blocks)):
+            if self.blocks[i].attn is None:
+                block_masks.append(None)
+                continue
+            key = (i in LONG_WINDOW_LAYERS, CAPPED_HEADS[i])
+            if key not in cache:
+                wb = sliding_window_num_blocks if key[0] else sliding_window_num_blocks // 2
+                cache[key] = build_bm(wb, CAPPED_HEADS[i])
+            block_masks.append(cache[key])
+        return block_masks
 
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
@@ -289,8 +315,8 @@ class GPT(nn.Module):
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
         assert len(ve) == len(self.blocks)
 
-        long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
-        block_masks = [long_bm if i in LONG_WINDOW_LAYERS else short_bm for i in range(len(self.blocks))]
+        block_masks = self.create_blockmasks(input_seq, sliding_window_num_blocks) # per-layer, per-head sliding-window masks
+        assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
@@ -423,9 +449,10 @@ def attn_query_rows(model: GPT, input_seq: Tensor, target_seq: Tensor, sliding_w
     """Exact attention distributions (each sums to 1) that the given query tokens place over
     the keys behind them, recomputed from the model's own q/k under the full causal + document
     + block-wise sliding-window mask. Long-window layers use sliding_window_num_blocks, short-
-    window layers half that (min 1 block), mirroring create_blockmasks. Returns
+    window layers half that (min 1 block), and the first CAPPED_HEADS[layer] heads are capped at
+    HEAD_CAP_BLOCKS blocks, mirroring create_blockmasks. Returns
     (rows: (L, H, Q, 128*wb_long), layer_ids) where rows[l, h, qi, d] is the weight query
-    query_idx[qi] places on the key d tokens back (0 beyond the layer's window)."""
+    query_idx[qi] places on the key d tokens back (0 beyond that head's window)."""
     attn_layers = [(i, block.attn) for i, block in enumerate(model.blocks) if block.attn is not None]
     with capture_qk(attn_layers, q_sel_idx=query_idx) as captures:
         model(input_seq, target_seq, sliding_window_num_blocks)
@@ -445,11 +472,15 @@ def attn_query_rows(model: GPT, input_seq: Tensor, target_seq: Tensor, sliding_w
     for li, ((layer_id, attn), capture) in enumerate(zip(attn_layers, captures)):
         (q_sel, k), = capture # each layer captured exactly once; q_sel: (1, Q, H, D), k: (1, T, H, D)
         wb = wb_long if layer_id in LONG_WINDOW_LAYERS else max(wb_long // 2, 1)
-        allowed = causal_doc & (query_idx[:, None] // 128 - pos[None, :] // 128 < wb)
+        # per-head windows: the first CAPPED_HEADS[layer_id] heads are capped at HEAD_CAP_BLOCKS blocks
+        wb_head = torch.tensor([min(wb, HEAD_CAP_BLOCKS)] * CAPPED_HEADS[layer_id] + [wb] * (num_heads - CAPPED_HEADS[layer_id]),
+                               device=input_seq.device)
+        block_dist = query_idx[:, None] // 128 - pos[None, :] // 128 # (Q, T)
+        allowed = causal_doc[None] & (block_dist[None] < wb_head[:, None, None]) # (H, Q, T)
         logits = (q_sel[0].transpose(0, 1) @ k[0].transpose(0, 1).mT).float() * attn.attn_scale # (H, Q, T)
         probs = logits.masked_fill_(~allowed, float("-inf")).softmax(-1)
         for qi in range(len(query_idx)):
-            sel = allowed[qi] & (d[qi] < d_max)
+            sel = causal_doc[qi] & (d[qi] < d_max) # capped heads have exactly-0 probs beyond their window
             rows[li, :, qi, d[qi][sel]] = probs[:, qi, sel]
     return rows, [i for i, _ in attn_layers]
 
@@ -689,6 +720,7 @@ for step in range(train_steps + 1):
         if master_process and viz_rows is not None:
             torch.save(dict(step=step, rows=(viz_rows / viz_batches).cpu(), layers=viz_layer_ids,
                             long_layers=list(LONG_WINDOW_LAYERS), window_blocks=int(get_window_size_blocks(step)),
+                            capped_heads=list(CAPPED_HEADS), head_cap_blocks=HEAD_CAP_BLOCKS,
                             seq_len=args.val_seq_len, query_names=["middle", "last"],
                             num_batches=viz_batches * world_size),
                        f"logs/{run_id_full}_attn_rows_step{step:06d}.pt")
