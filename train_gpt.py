@@ -264,7 +264,9 @@ LONG_WINDOW_LAYERS = (0, 4, 11, 15)
 # simple work, so they get one common key/value stream, shrinking the compute-bound K/V projections;
 # full heads keep private KV. Layers 13/14 are uncapped - their histograms show no local specialists.
 HEAD_CAP_BLOCKS = 2 # capped heads attend within 2*128 = 256 tokens (block-granular, so reach is 129-256 depending on position)
-CAPPED_HEADS = (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 0, 0, 2) # of 8 heads, per layer; layer 7 has no attention
+# CONTROL RUN: caps + KV sharing disabled to isolate the batched-Muon speedup; revert to
+# (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 0, 0, 2) to re-enable the capped/GQA architecture
+CAPPED_HEADS = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) # of 8 heads, per layer; layer 7 has no attention
 
 def kv_head_map(layer_idx: int, num_heads: int) -> list[int]:
     """q-head -> kv-head index under the shared-KV grouping: capped heads all read kv head 0,
