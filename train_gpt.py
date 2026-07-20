@@ -815,7 +815,7 @@ for step in range(train_steps + 1):
         dist.barrier()
         training_time_ms += 1000 * (time.perf_counter() - t0)
         from torch.profiler import profile, ProfilerActivity # avoid top level import
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
             model(inputs, targets, get_window_size_blocks(step)).backward()
             for param in model.parameters():
                 dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
@@ -830,6 +830,13 @@ for step in range(train_steps + 1):
             model.zero_grad(set_to_none=True)
             torch.cuda.synchronize()
         print0(prof.key_averages().table(sort_by="cuda_time_total", row_limit=40), console=True)
+        # kernel-partition view with input shapes: self-CUDA sums to total GPU time without nesting
+        # double-counts, and the shapes separate Muon's NS matmuls from the model GEMMs
+        print0(prof.key_averages(group_by_input_shape=True).table(sort_by="self_cuda_time_total", row_limit=40), console=True)
+        if master_process:
+            trace_path = f"logs/{run_id_full}_trace_step{step:06d}.json"
+            prof.export_chrome_trace(trace_path)
+            print0(f"chrome trace saved to {trace_path} - open at https://ui.perfetto.dev", console=True)
         print0(f"step:{step+1}/{train_steps} profiled; step excluded from train_time", console=True)
         dist.barrier()
         t0 = time.perf_counter()
