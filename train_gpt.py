@@ -400,6 +400,10 @@ class GPT(nn.Module):
 # the BlockMask's kv-block sparsity, i.e. the sliding window. So the analysis forward pass
 # (which runs outside the compiled model) routes attention through this separately compiled
 # flex_attention to reproduce the exact training-regime residual stream. Compiles lazily on first use.
+# The GQA head-group split gives this function ~18 distinct shape signatures ((Hq, Hkv) per layer
+# group, x histogram/val seq lens). Above the default recompile limit (8), dynamo silently falls
+# back to UNCOMPILED flex, which materializes the full TxT score matrix and OOMs at these lengths.
+torch._dynamo.config.recompile_limit = 40
 analysis_flex_attention = torch.compile(flex_attention, dynamic=False)
 
 @contextmanager
