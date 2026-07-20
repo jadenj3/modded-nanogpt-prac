@@ -173,8 +173,12 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x: Tensor, ve: Tensor | None, block_masks: tuple[BlockMask, BlockMask], lambdas: Tensor):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
-        q = F.linear(x, self.qo_w[0]).view(B, T, self.num_heads, self.head_dim)
-        k, v = F.linear(x, self.kv_w.flatten(end_dim=1)).view(B, T, 2 * self.num_kv_heads, self.head_dim).chunk(2, dim=-2)
+        # single fused QKV GEMM: cat the (tiny) weights rather than paying two GEMMs that each
+        # re-read the (huge) activation tensor; the column count still shrinks with num_kv_heads
+        qkv = F.linear(x, torch.cat([self.qo_w[0], self.kv_w.flatten(end_dim=1)]))
+        qkv = qkv.view(B, T, self.num_heads + 2 * self.num_kv_heads, self.head_dim)
+        q = qkv[:, :, :self.num_heads]
+        k, v = qkv[:, :, self.num_heads:].chunk(2, dim=-2)
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
@@ -582,6 +586,8 @@ class Hyperparameters:
     attn_stats_seq_len = 64*1024 # tokens per attention-distance histogram pass (runs at each val step); 0 disables
     attn_viz = True # save middle/last-token attention rows averaged over the val loop at each val step (plot with plot_attn_rows.py)
     window_sweep_blocks = (1, 2, 4, 7, 14, 64, 2048) # window sizes (128-token blocks) for the end-of-run removal sweep; 2048 blocks = dense at 256K val seq len; () disables
+    profile_step = 0 # if > 0, dump a kernel-level profiler table for that one training step. The step still
+    # trains but is excluded from train_time, so step_avg is not comparable to unprofiled runs; diagnosis only
 args = Hyperparameters()
 
 run_id = int(os.environ.get("RUN_ID", 0))
@@ -802,6 +808,32 @@ for step in range(train_steps + 1):
 
     # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
+    if args.profile_step and step == args.profile_step:
+        # kernel-level Amdahl table for one full training step (fwd + bwd + grad reduce + optimizer),
+        # off the clock. Same math as the normal path (incl. lr/momentum schedule), so training is
+        # unaffected; only this step's wall time is excluded from train_time.
+        dist.barrier()
+        training_time_ms += 1000 * (time.perf_counter() - t0)
+        from torch.profiler import profile, ProfilerActivity # avoid top level import
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            model(inputs, targets, get_window_size_blocks(step)).backward()
+            for param in model.parameters():
+                dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+            for opt in optimizers:
+                for group in opt.param_groups:
+                    group["lr"] = group["initial_lr"] * get_lr(step)
+            for group in optimizer2.param_groups:
+                frac = min(step / 300, 1) # momentum warmup for muon
+                group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
+            for opt in optimizers:
+                opt.step()
+            model.zero_grad(set_to_none=True)
+            torch.cuda.synchronize()
+        print0(prof.key_averages().table(sort_by="cuda_time_total", row_limit=40), console=True)
+        print0(f"step:{step+1}/{train_steps} profiled; step excluded from train_time", console=True)
+        dist.barrier()
+        t0 = time.perf_counter()
+        continue
     model(inputs, targets, get_window_size_blocks(step)).backward()
     opt2futures = {
         opt: [dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True).get_future() for p in params]
