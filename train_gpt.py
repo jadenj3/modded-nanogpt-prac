@@ -58,17 +58,19 @@ def zeropower_via_newtonschulz5(G: Tensor) -> Tensor:
     return X
 
 @torch.compile
-def update(acc_bf16_view_u16: Tensor, mantissa: Tensor, momentum_buffer: Tensor, grad: Tensor, momentum: Tensor, eff_lr: Tensor, eff_weight_decay: Tensor):
-    assert acc_bf16_view_u16.dtype == mantissa.dtype == torch.uint16
-    grad = grad.float()
+def update(params_u16: list[Tensor], mantissas: list[Tensor], momentum_buffer: Tensor, grads: list[Tensor], momentum: Tensor, eff_lr: Tensor, eff_weight_decay: Tensor):
+    # batched over a bucket of same-shape params: one stacked NS chain instead of one per param
+    # (the per-param version spends more time on kernel launches than math at this size)
+    grad = torch.stack(grads).float()
     momentum_buffer.copy_(momentum * momentum_buffer + (1 - momentum) * grad)
     v = zeropower_via_newtonschulz5(momentum * momentum_buffer + (1 - momentum) * grad)
-
-    acc_m_u32 = (acc_bf16_view_u16.to(torch.uint32) << 16) | mantissa.to(torch.uint32)
-    acc_m_u32.view(torch.float32).mul_(1 - eff_weight_decay)
-    acc_m_u32.view(torch.float32).add_(other=v, alpha=-eff_lr)
-    acc_bf16_view_u16.copy_((acc_m_u32 >> 16).to(torch.uint16))
-    mantissa.copy_(acc_m_u32.to(torch.uint16))
+    for acc_bf16_view_u16, mantissa, v_p in zip(params_u16, mantissas, v.unbind(0)):
+        assert acc_bf16_view_u16.dtype == mantissa.dtype == torch.uint16
+        acc_m_u32 = (acc_bf16_view_u16.to(torch.uint32) << 16) | mantissa.to(torch.uint32)
+        acc_m_u32.view(torch.float32).mul_(1 - eff_weight_decay)
+        acc_m_u32.view(torch.float32).add_(other=v_p, alpha=-eff_lr)
+        acc_bf16_view_u16.copy_((acc_m_u32 >> 16).to(torch.uint16))
+        mantissa.copy_(acc_m_u32.to(torch.uint16))
 
 class Muon(torch.optim.Optimizer):
     """
@@ -96,23 +98,31 @@ class Muon(torch.optim.Optimizer):
         futures: list[torch.Future] = []
         for group in self.param_groups:
             params: list[Tensor] = group["params"]
-            params_pad = params + [torch.empty_like(params[-1])] * self.world_size
             momentum = torch._as_tensor_fullprec(group["momentum"])
-            for base_i in range(len(params))[::self.world_size]:
-                if base_i + self.rank < len(params):
-                    p = params[base_i + self.rank]
-                    state = self.state[p]
+            # bucket same-shape params: one batched NS chain per bucket instead of one per param,
+            # and all_gather rounds stay same-shape (mixed-shape rounds are invalid collectives)
+            buckets: dict[tuple, list[Tensor]] = {}
+            for p in params:
+                buckets.setdefault((tuple(p.shape), getattr(p, "wd_mul", 1.0)), []).append(p)
+            for (shape, wd_mul), bucket in buckets.items():
+                mine = bucket[self.rank::self.world_size] # this rank's share, matching the gather rounds below
+                if mine:
+                    state = self.state[mine[0]]
                     if len(state) == 0:
-                        state["mantissa"] = torch.zeros_like(p, dtype=torch.uint16)
-                        state["momentum_buffer"] = torch.zeros_like(p, dtype=torch.float32)
+                        state["mantissa"] = [torch.zeros_like(p, dtype=torch.uint16) for p in mine]
+                        state["momentum_buffer"] = torch.zeros((len(mine), *shape), dtype=torch.float32, device=mine[0].device)
                     update(
-                        p.view(torch.uint16), state["mantissa"], state["momentum_buffer"],
-                        p.grad, momentum,
-                        eff_lr=torch._as_tensor_fullprec(group["lr"] * max(1, p.size(-2) / p.size(-1)) ** 0.5),
-                        eff_weight_decay=torch._as_tensor_fullprec(group["lr"] * group["weight_decay"] * getattr(p, "wd_mul", 1.0)),
+                        [p.view(torch.uint16) for p in mine], state["mantissa"], state["momentum_buffer"],
+                        [p.grad for p in mine], momentum,
+                        eff_lr=torch._as_tensor_fullprec(group["lr"] * max(1, mine[0].size(-2) / mine[0].size(-1)) ** 0.5),
+                        eff_weight_decay=torch._as_tensor_fullprec(group["lr"] * group["weight_decay"] * wd_mul),
                     )
-                futures.append(dist.all_gather(params_pad[base_i:base_i + self.world_size], params_pad[base_i + self.rank], async_op=True).get_future())
-        torch.futures.collect_all(futures).wait()
+                if self.world_size > 1: # single-rank gathers are pure self-copies, skip them
+                    bucket_pad = bucket + [torch.empty_like(bucket[0])] * ((-len(bucket)) % self.world_size)
+                    for base_i in range(0, len(bucket_pad), self.world_size):
+                        futures.append(dist.all_gather(bucket_pad[base_i:base_i + self.world_size], bucket_pad[base_i + self.rank], async_op=True).get_future())
+        if futures:
+            torch.futures.collect_all(futures).wait()
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the model
