@@ -146,15 +146,23 @@ class Rotary(nn.Module):
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, head_dim=128):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, head_dim=128):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
+        self.num_capped = CAPPED_HEADS[layer_idx]
+        assert self.num_capped < num_heads
+        # heterogeneous GQA: the capped (local) heads share KV head 0; full heads keep private KV
+        self.num_kv_heads = num_heads - self.num_capped + (1 if self.num_capped else 0)
         hdim = num_heads * head_dim
+        kv_hdim = self.num_kv_heads * head_dim
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
-        self.qkvo_w = nn.Parameter(init_linear(torch.empty(4, hdim, dim)).bfloat16())
-        self.qkvo_w.detach()[3].zero_() # out zero init suggested by @Grad62304977
+        # split into batched (q, o) and batched (k, v) so the K/V projections shrink with num_kv_heads
+        # while Muon still orthogonalizes each projection separately
+        self.qo_w = nn.Parameter(init_linear(torch.empty(2, hdim, dim)).bfloat16())
+        self.qo_w.detach()[1].zero_() # out zero init suggested by @Grad62304977
+        self.kv_w = nn.Parameter(init_linear(torch.empty(2, kv_hdim, dim)).bfloat16())
         self.rotary = Rotary(head_dim, max_seq_len)
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
@@ -162,15 +170,19 @@ class CausalSelfAttention(nn.Module):
         self.qk_capture: list | None = None # when set to a list, forward appends (q, k) for attention-distance analysis
         self.q_sel_idx: Tensor | None = None # when also set, only these query positions of q are captured (keys stay full)
 
-    def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask, lambdas: Tensor):
+    def forward(self, x: Tensor, ve: Tensor | None, block_masks: tuple[BlockMask, BlockMask], lambdas: Tensor):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
-        q, k, v = F.linear(x, self.qkvo_w[:3].flatten(end_dim=1)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
+        q = F.linear(x, self.qo_w[0]).view(B, T, self.num_heads, self.head_dim)
+        k, v = F.linear(x, self.kv_w.flatten(end_dim=1)).view(B, T, 2 * self.num_kv_heads, self.head_dim).chunk(2, dim=-2)
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         v = norm(v)
         if ve is not None:
-            v = lambdas[0] * v + lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
+            ve = ve.view(B, T, self.num_heads, self.head_dim)
+            if self.num_capped: # the shared KV head takes the mean of the capped heads' value-embedding chunks
+                ve = torch.cat([ve[:, :, :self.num_capped].mean(dim=2, keepdim=True), ve[:, :, self.num_capped:]], dim=2)
+            v = lambdas[0] * v + lambdas[1] * ve # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = lambdas[0] * v
         attn_fn = flex_attention
@@ -178,9 +190,18 @@ class CausalSelfAttention(nn.Module):
             self.qk_capture.append((q if self.q_sel_idx is None else q[:, self.q_sel_idx], k))
             # eager flex_attention ignores the block mask's kv sparsity (the sliding window), so use a compiled one
             attn_fn = analysis_flex_attention
-        y = attn_fn(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
+        full_bm, capped_bm = block_masks
+        n = self.num_capped
+        if n: # capped heads: MQA onto the shared KV head under the capped window; full heads: MHA under the scheduled window
+            yc = attn_fn(q[:, :, :n].transpose(1, 2), k[:, :, :1].transpose(1, 2), v[:, :, :1].transpose(1, 2),
+                         block_mask=capped_bm, scale=self.attn_scale, enable_gqa=True)
+            yf = attn_fn(q[:, :, n:].transpose(1, 2), k[:, :, 1:].transpose(1, 2), v[:, :, 1:].transpose(1, 2),
+                         block_mask=full_bm, scale=self.attn_scale)
+            y = torch.cat([yc, yf], dim=1).transpose(1, 2)
+        else:
+            y = attn_fn(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=full_bm, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
-        y = F.linear(y, self.qkvo_w[3])
+        y = F.linear(y, self.qo_w[1])
         return y
 
 class MLP(nn.Module):
@@ -202,13 +223,13 @@ class Block(nn.Module):
     def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
-        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
+        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len, layer_idx) if layer_idx != 7 else None
         self.mlp = MLP(dim)
 
-    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask, lambdas: Tensor, sa_lambdas: Tensor):
+    def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_masks: tuple | None, lambdas: Tensor, sa_lambdas: Tensor):
         x = lambdas[0] * x + lambdas[1] * x0
         if self.attn is not None:
-            x = x + self.attn(x, ve, block_mask, sa_lambdas)
+            x = x + self.attn(x, ve, block_masks, sa_lambdas)
         x = x + self.mlp(norm(x))
         return x
 
@@ -225,10 +246,17 @@ LONG_WINDOW_LAYERS = (0, 4, 11, 15)
 # than their window): in each layer, the first CAPPED_HEADS[i] of the 8 heads are restricted to
 # HEAD_CAP_BLOCKS blocks for the whole run; the rest keep the full scheduled window. Which indices
 # are capped is arbitrary - the mask breaks the symmetry and assigns the local roles to those heads.
-# Aggressive on early layers (overwhelmingly local in the histograms); every layer keeps >= 2
-# full-window heads; layer 15, the broadest reader, keeps 6. Layer 7 has no attention.
+# The capped (local) heads of a layer also SHARE ONE KV head (heterogeneous GQA/MQA): local heads do
+# simple work, so they get one common key/value stream, shrinking the compute-bound K/V projections;
+# full heads keep private KV. Layers 13/14 are uncapped - their histograms show no local specialists.
 HEAD_CAP_BLOCKS = 2 # capped heads attend within 2*128 = 256 tokens (block-granular, so reach is 129-256 depending on position)
-CAPPED_HEADS = (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 3, 3, 2) # of 8 heads, per layer
+CAPPED_HEADS = (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 0, 0, 2) # of 8 heads, per layer; layer 7 has no attention
+
+def kv_head_map(layer_idx: int, num_heads: int) -> list[int]:
+    """q-head -> kv-head index under the shared-KV grouping: capped heads all read kv head 0,
+    full heads read their own private kv heads 1..num_heads-n."""
+    n = CAPPED_HEADS[layer_idx]
+    return [0] * n + list(range(1, num_heads - n + 1)) if n > 0 else list(range(num_heads))
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, num_layers: int, num_heads: int, model_dim: int, max_seq_len: int):
@@ -291,43 +319,32 @@ class GPT(nn.Module):
         # _transpose_ordered, which re-materializes a dense mask + full argsort per (variant, head).
         partial_q_num_blocks, partial_q_indices = dense_to_ordered_asc(blockmask_partial.mT)
         full_q_num_blocks, full_q_indices = dense_to_ordered_asc(blockmask_all.mT)
-        # per-head windows: the block indices are identical for every head, only the counts differ
-        def expand_h(t: Tensor) -> Tensor:
-            return t.expand(1, self.num_heads, -1, -1).contiguous()
-        partial_kv_indices_h, full_kv_indices_h = expand_h(partial_kv_indices), expand_h(full_kv_indices)
-        partial_q_indices_h, full_q_indices_h = expand_h(partial_q_indices), expand_h(full_q_indices)
-        head_idx = torch.arange(self.num_heads, device="cuda")
-        def build_bm(window_size_blocks: Tensor, num_capped: int) -> BlockMask:
-            # first num_capped heads are capped at HEAD_CAP_BLOCKS blocks; the rest get the scheduled window
-            w = torch.where(head_idx < num_capped, torch.clamp_max(window_size_blocks, HEAD_CAP_BLOCKS), window_size_blocks).view(1, -1, 1)
+        def build_bm(window_size_blocks: Tensor) -> BlockMask:
             # nearest-w-blocks window via count clamping, applied identically in both directions so the
             # backward tables are exactly the transpose of the forward mask (verified vs from_kv_blocks)
+            w = window_size_blocks
             return BlockMask(
                 seq_lengths=(len(input_seq), len(input_seq)),
                 kv_num_blocks=torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(w - full_kv_num_blocks, 1)),
-                kv_indices=partial_kv_indices_h,
+                kv_indices=partial_kv_indices,
                 full_kv_num_blocks=torch.clamp_max(full_kv_num_blocks, w - 1),
-                full_kv_indices=full_kv_indices_h,
+                full_kv_indices=full_kv_indices,
                 q_num_blocks=torch.clamp_max(partial_q_num_blocks, torch.clamp_min(w - full_q_num_blocks, 1)),
-                q_indices=partial_q_indices_h,
+                q_indices=partial_q_indices,
                 full_q_num_blocks=torch.clamp_max(full_q_num_blocks, w - 1).clamp_min(0), # w=0 short masks: from_kv_blocks' transpose yields 0, not -1
-                full_q_indices=full_q_indices_h,
+                full_q_indices=full_q_indices,
                 BLOCK_SIZE=(BLOCK_SIZE, BLOCK_SIZE),
                 mask_mod=document_causal,
             )
-        # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        cache = {}
-        block_masks = []
-        for i in range(len(self.blocks)):
-            if self.blocks[i].attn is None:
-                block_masks.append(None)
-                continue
-            key = (i in LONG_WINDOW_LAYERS, CAPPED_HEADS[i])
-            if key not in cache:
-                wb = sliding_window_num_blocks if key[0] else sliding_window_num_blocks // 2
-                cache[key] = build_bm(wb, CAPPED_HEADS[i])
-            block_masks.append(cache[key])
-        return block_masks
+        # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper.
+        # Each attention layer gets a (full-window, capped-window) mask pair: the capped (shared-KV)
+        # head group runs under the capped mask, the full heads under the scheduled one.
+        long_full = build_bm(sliding_window_num_blocks)
+        short_full = build_bm(sliding_window_num_blocks // 2)
+        long_capped = build_bm(torch.clamp_max(sliding_window_num_blocks, HEAD_CAP_BLOCKS))
+        short_capped = build_bm(torch.clamp_max(sliding_window_num_blocks // 2, HEAD_CAP_BLOCKS))
+        return [None if block.attn is None else ((long_full, long_capped) if i in LONG_WINDOW_LAYERS else (short_full, short_capped))
+                for i, block in enumerate(self.blocks)]
 
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
         assert input_seq.ndim == 1
@@ -337,7 +354,7 @@ class GPT(nn.Module):
         ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
         assert len(ve) == len(self.blocks)
 
-        block_masks = self.create_blockmasks(input_seq, sliding_window_num_blocks) # per-layer, per-head sliding-window masks
+        block_masks = self.create_blockmasks(input_seq, sliding_window_num_blocks) # per-layer (full, capped) mask pairs
         assert len(block_masks) == len(self.blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
@@ -412,9 +429,10 @@ def attn_distance_histograms(model: GPT, input_seq: Tensor, target_seq: Tensor, 
     with capture_qk(attn_layers) as captures:
         model(input_seq, target_seq, sliding_window_num_blocks)
     qks = []
-    for capture in captures:
-        (q, k), = capture # each layer captured exactly once; (1, T, H, D)
-        qks.append((q[0].transpose(0, 1), k[0].transpose(0, 1))) # (H, T, D)
+    for (layer_id, _), capture in zip(attn_layers, captures):
+        (q, k), = capture # each layer captured exactly once; q: (1, T, H, D), k: (1, T, num_kv_heads, D)
+        kh = k[0].transpose(0, 1)[kv_head_map(layer_id, q.size(2))] # expand shared KV back to one row per q head
+        qks.append((q[0].transpose(0, 1), kh)) # (H, T, D)
     T = input_seq.size(0)
     num_heads = qks[0][0].size(0)
     docs = (input_seq == 50256).cumsum(0)
@@ -492,14 +510,15 @@ def attn_query_rows(model: GPT, input_seq: Tensor, target_seq: Tensor, sliding_w
     num_heads = captures[0][0][0].size(-2)
     rows = torch.zeros(len(attn_layers), num_heads, len(query_idx), d_max, device=input_seq.device)
     for li, ((layer_id, attn), capture) in enumerate(zip(attn_layers, captures)):
-        (q_sel, k), = capture # each layer captured exactly once; q_sel: (1, Q, H, D), k: (1, T, H, D)
+        (q_sel, k), = capture # each layer captured exactly once; q_sel: (1, Q, H, D), k: (1, T, num_kv_heads, D)
         wb = wb_long if layer_id in LONG_WINDOW_LAYERS else max(wb_long // 2, 1)
         # per-head windows: the first CAPPED_HEADS[layer_id] heads are capped at HEAD_CAP_BLOCKS blocks
         wb_head = torch.tensor([min(wb, HEAD_CAP_BLOCKS)] * CAPPED_HEADS[layer_id] + [wb] * (num_heads - CAPPED_HEADS[layer_id]),
                                device=input_seq.device)
         block_dist = query_idx[:, None] // 128 - pos[None, :] // 128 # (Q, T)
         allowed = causal_doc[None] & (block_dist[None] < wb_head[:, None, None]) # (H, Q, T)
-        logits = (q_sel[0].transpose(0, 1) @ k[0].transpose(0, 1).mT).float() * attn.attn_scale # (H, Q, T)
+        kh = k[0].transpose(0, 1)[kv_head_map(layer_id, num_heads)] # expand shared KV back to one row per q head
+        logits = (q_sel[0].transpose(0, 1) @ kh.mT).float() * attn.attn_scale # (H, Q, T)
         probs = logits.masked_fill_(~allowed, float("-inf")).softmax(-1)
         for qi in range(len(query_idx)):
             sel = causal_doc[qi] & (d[qi] < d_max) # capped heads have exactly-0 probs beyond their window
