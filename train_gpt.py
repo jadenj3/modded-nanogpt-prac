@@ -262,9 +262,10 @@ LONG_WINDOW_LAYERS = (0, 4, 11, 15)
 # are capped is arbitrary - the mask breaks the symmetry and assigns the local roles to those heads.
 # The capped (local) heads of a layer also SHARE ONE KV head (heterogeneous GQA/MQA): local heads do
 # simple work, so they get one common key/value stream, shrinking the compute-bound K/V projections;
-# full heads keep private KV. Layers 13/14 are uncapped - their histograms show no local specialists.
+# full heads keep private KV. Layers 13-15 are uncapped - their histograms show no local specialists,
+# and 15 is the broadest reader in the network (all heads near the uniform-attention baseline).
 HEAD_CAP_BLOCKS = 2 # capped heads attend within 2*128 = 256 tokens (block-granular, so reach is 129-256 depending on position)
-CAPPED_HEADS = (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 0, 0, 2) # of 8 heads, per layer; layer 7 has no attention
+CAPPED_HEADS = (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 0, 0, 0) # of 8 heads, per layer; layer 7 has no attention
 
 def kv_head_map(layer_idx: int, num_heads: int) -> list[int]:
     """q-head -> kv-head index under the shared-KV grouping: capped heads all read kv head 0,
