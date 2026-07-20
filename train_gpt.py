@@ -586,7 +586,7 @@ class Hyperparameters:
     attn_stats_seq_len = 64*1024 # tokens per attention-distance histogram pass (runs at each val step); 0 disables
     attn_viz = True # save middle/last-token attention rows averaged over the val loop at each val step (plot with plot_attn_rows.py)
     window_sweep_blocks = (1, 2, 4, 7, 14, 64, 2048) # window sizes (128-token blocks) for the end-of-run removal sweep; 2048 blocks = dense at 256K val seq len; () disables
-    profile_step = 0 # if > 0, dump a kernel-level profiler table for that one training step. The step still
+    profile_step = 20 # if > 0, dump a kernel-level profiler table for that one training step. The step still
     # trains but is excluded from train_time, so step_avg is not comparable to unprofiled runs; diagnosis only
 args = Hyperparameters()
 
