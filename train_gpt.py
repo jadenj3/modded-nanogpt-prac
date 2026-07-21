@@ -162,8 +162,8 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = head_dim
         self.num_capped = CAPPED_HEADS[layer_idx]
         assert self.num_capped < num_heads
-        # heterogeneous GQA: the capped (local) heads share KV head 0; full heads keep private KV
-        self.num_kv_heads = num_heads - self.num_capped + (1 if self.num_capped else 0)
+        # heterogeneous GQA (if enabled): the capped (local) heads share KV head 0; full heads keep private KV
+        self.num_kv_heads = num_heads - self.num_capped + 1 if (self.num_capped and SHARE_CAPPED_KV) else num_heads
         hdim = num_heads * head_dim
         kv_hdim = self.num_kv_heads * head_dim
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
@@ -194,7 +194,7 @@ class CausalSelfAttention(nn.Module):
         v = norm(v)
         if ve is not None:
             ve = ve.view(B, T, self.num_heads, self.head_dim)
-            if self.num_capped: # the shared KV head takes the mean of the capped heads' value-embedding chunks
+            if self.num_kv_heads != self.num_heads: # the shared KV head takes the mean of the capped heads' ve chunks
                 ve = torch.cat([ve[:, :, :self.num_capped].mean(dim=2, keepdim=True), ve[:, :, self.num_capped:]], dim=2)
             v = lambdas[0] * v + lambdas[1] * ve # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
@@ -206,10 +206,11 @@ class CausalSelfAttention(nn.Module):
             attn_fn = analysis_flex_attention
         full_bm, capped_bm = block_masks
         n = self.num_capped
-        if n: # capped heads: MQA onto the shared KV head under the capped window; full heads: MHA under the scheduled window
-            yc = attn_fn(q[:, :, :n].transpose(1, 2), k[:, :, :1].transpose(1, 2), v[:, :, :1].transpose(1, 2),
-                         block_mask=capped_bm, scale=self.attn_scale, enable_gqa=True)
-            yf = attn_fn(q[:, :, n:].transpose(1, 2), k[:, :, 1:].transpose(1, 2), v[:, :, 1:].transpose(1, 2),
+        if n: # capped heads under the capped window (MQA onto the shared KV head if sharing); full heads under the scheduled window
+            nkv_c = 1 if SHARE_CAPPED_KV else n # kv heads serving the capped group
+            yc = attn_fn(q[:, :, :n].transpose(1, 2), k[:, :, :nkv_c].transpose(1, 2), v[:, :, :nkv_c].transpose(1, 2),
+                         block_mask=capped_bm, scale=self.attn_scale, enable_gqa=SHARE_CAPPED_KV)
+            yf = attn_fn(q[:, :, n:].transpose(1, 2), k[:, :, nkv_c:].transpose(1, 2), v[:, :, nkv_c:].transpose(1, 2),
                          block_mask=full_bm, scale=self.attn_scale)
             y = torch.cat([yc, yf], dim=1).transpose(1, 2)
         else:
@@ -260,18 +261,19 @@ LONG_WINDOW_LAYERS = (0, 4, 11, 15)
 # than their window): in each layer, the first CAPPED_HEADS[i] of the 8 heads are restricted to
 # HEAD_CAP_BLOCKS blocks for the whole run; the rest keep the full scheduled window. Which indices
 # are capped is arbitrary - the mask breaks the symmetry and assigns the local roles to those heads.
-# The capped (local) heads of a layer also SHARE ONE KV head (heterogeneous GQA/MQA): local heads do
-# simple work, so they get one common key/value stream, shrinking the compute-bound K/V projections;
-# full heads keep private KV. Layers 13-15 are uncapped - their histograms show no local specialists,
-# and 15 is the broadest reader in the network (all heads near the uniform-attention baseline).
+# With SHARE_CAPPED_KV, the capped (local) heads of a layer also SHARE ONE KV head (heterogeneous
+# GQA/MQA): local heads do simple work, so they get one common key/value stream, shrinking the
+# compute-bound K/V projections; full heads keep private KV. Layers 13-15 are uncapped - their
+# histograms show no local specialists, and 15 is the broadest reader in the network.
 HEAD_CAP_BLOCKS = 2 # capped heads attend within 2*128 = 256 tokens (block-granular, so reach is 129-256 depending on position)
-# BASELINE RUN: all caps + KV sharing disabled; capped/GQA pattern is (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 0, 0, 0)
-CAPPED_HEADS = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) # of 8 heads, per layer; layer 7 has no attention
+CAPPED_HEADS = (5, 6, 6, 6, 5, 5, 5, 0, 5, 5, 4, 4, 4, 0, 0, 0) # of 8 heads, per layer; layer 7 has no attention
+SHARE_CAPPED_KV = False # False: capped heads keep private KV heads, isolating the window-cap effect
+# from KV sharing (caps-only ablation for loss attribution). True: the full capped/GQA architecture.
 
 def kv_head_map(layer_idx: int, num_heads: int) -> list[int]:
-    """q-head -> kv-head index under the shared-KV grouping: capped heads all read kv head 0,
-    full heads read their own private kv heads 1..num_heads-n."""
-    n = CAPPED_HEADS[layer_idx]
+    """q-head -> kv-head index: under SHARE_CAPPED_KV, capped heads all read kv head 0 and full
+    heads read their own private kv heads 1..num_heads-n; otherwise the identity map."""
+    n = CAPPED_HEADS[layer_idx] if SHARE_CAPPED_KV else 0
     return [0] * n + list(range(1, num_heads - n + 1)) if n > 0 else list(range(num_heads))
 
 class GPT(nn.Module):
